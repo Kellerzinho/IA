@@ -1,0 +1,46 @@
+{
+    "camera": {
+        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:47867/cam/realmonitor?channel=11&subtype=0",
+        "comment": "URL da câmera RTSP. Modifique conforme necessário."
+    },
+    "dashboard": {
+        "url": "http://localhost:3310",
+        "comment": "URL do dashboard para envio de notificações."
+    },
+    "model": {
+        "path": "roboflow.pt",
+        "conf": 0.1,
+        "mao_conf": 0.8,
+        "pessoa_conf": 0.3,
+        "iou": 0.4,
+        "agnostic_nms": true
+    },
+    "detection": {
+        "show_people_boxes": true,
+        "show_association_lines": true,
+        "debug_mode": false
+    },
+    "tracking_params": {
+        "alpha": 0.4,
+        "max_missed_time": 10,
+        "confirm_time": 10,
+        "state_change_delay": 5,
+        "distance_threshold": 80,
+        "mao_confirm_time": 2,
+        "atendimento_timeout": 20,
+        "mao_vertical_threshold": 250,
+        "mao_horizontal_threshold": 150,
+        "peso_horizontal": 2,
+        "peso_vertical": 0.8,
+        "pessoa_to_table_max_dist": 100
+    },
+    "table_capacities": {
+        "0": 10,
+        "1": 12,
+        "2": 14,
+        "3": 2,
+        "4": 4,
+        "5": 6,
+        "6": 8
+    }
+} 

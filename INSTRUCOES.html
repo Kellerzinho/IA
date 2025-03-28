@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de Mesas - Instruções</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        header {
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 28px;
+        }
+        h2 {
+            background-color: #3498db;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 30px;
+        }
+        .simple-method {
+            background-color: #27ae60;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .shortcut-method {
+            background-color: #f39c12;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .command {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        .key {
+            background-color: #7f8c8d;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 0 3px;
+        }
+        .warning {
+            background-color: #e74c3c;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .note {
+            background-color: #3498db;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        ul li {
+            margin-bottom: 8px;
+        }
+        ol li {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>MONITOR DE MESAS - SISTEMA DE DETECÇÃO</h1>
+        <p>Sistema de monitoramento de ocupação de mesas via RTSP/CUDA</p>
+    </header>
+
+    <p>Este sistema monitora a ocupação de mesas através de câmeras RTSP,
+    utilizando inteligência artificial com YOLO e CUDA.</p>
+
+    <h2>REQUISITOS DO SISTEMA</h2>
+    <ul>
+        <li>Windows 10 ou superior</li>
+        <li>Python 3.8 ou superior</li>
+        <li>Placa de vídeo NVIDIA com suporte a CUDA</li>
+        <li>Drivers NVIDIA atualizados</li>
+        <li>Acesso a uma câmera via RTSP (ex: DVR Intelbras)</li>
+    </ul>
+
+    <h2>COMO EXECUTAR</h2>
+
+    <div class="simple-method">
+        <h3>Método 1 (Mais simples):</h3>
+        <p>Dê um duplo clique no arquivo <strong>"iniciar_monitor.bat"</strong></p>
+    </div>
+
+    <div class="shortcut-method">
+        <h3>Método 2 (Criar atalho):</h3>
+        <ol>
+            <li>Clique com o botão direito na área de trabalho</li>
+            <li>Selecione "Novo" > "Atalho"</li>
+            <li>No campo "Digite o local do item", insira:
+                <div class="command">%windir%\system32\cmd.exe /c "cd /d "%~dp0" && iniciar_monitor.bat"</div>
+            </li>
+            <li>Clique em "Avançar"</li>
+            <li>Dê o nome "Monitor de Mesas" ao atalho</li>
+            <li>Clique em "Concluir"</li>
+        </ol>
+        <p><strong>Opcional:</strong> Clique com o botão direito no atalho, vá em "Propriedades" e mude o ícone.</p>
+    </div>
+
+    <h2>PRIMEIROS PASSOS</h2>
+
+    <p>Ao executar pela primeira vez:</p>
+    <ol>
+        <li>O sistema verificará se todas as dependências estão instaladas</li>
+        <li>Se não existir um arquivo config.json, será criado automaticamente</li>
+        <li>Edite o arquivo config.json para configurar a URL da câmera RTSP
+            <div class="command">"url": "rtsp://admin:senha@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0"</div>
+        </li>
+        <li>Certifique-se de que o arquivo do modelo (roboflow.pt) está no diretório</li>
+    </ol>
+
+    <h2>CONFIGURAÇÃO RTSP</h2>
+
+    <p>Para DVRs Intelbras, use o formato:</p>
+    <div class="command">rtsp://USUARIO:SENHA@IP_DO_DVR:554/cam/realmonitor?channel=NUMERO_CAMERA&subtype=0</div>
+
+    <p>onde:</p>
+    <ul>
+        <li><strong>USUARIO</strong>: nome de usuário do DVR (geralmente "admin")</li>
+        <li><strong>SENHA</strong>: senha de acesso ao DVR</li>
+        <li><strong>IP_DO_DVR</strong>: endereço IP do DVR (ex: 192.168.1.100)</li>
+        <li><strong>NUMERO_CAMERA</strong>: número do canal da câmera (1, 2, 3, etc.)</li>
+        <li><strong>subtype=0</strong>: stream principal (alta qualidade)</li>
+        <li><strong>subtype=1</strong>: stream secundário (menor qualidade)</li>
+    </ul>
+
+    <h2>TECLAS DE CONTROLE</h2>
+
+    <p>Quando o programa estiver rodando, utilize:</p>
+    <ul>
+        <li><span class="key">Q</span>: Encerra o programa</li>
+        <li><span class="key">D</span>: Ativa/desativa modo debug</li>
+        <li><span class="key">P</span>: Mostra/oculta caixas de pessoas</li>
+        <li><span class="key">L</span>: Mostra/oculta linhas de associação</li>
+    </ul>
+
+    <h2>SOLUÇÃO DE PROBLEMAS</h2>
+
+    <div class="warning">
+        <h3>Se ocorrer erro CUDA:</h3>
+        <ul>
+            <li>Verifique se os drivers NVIDIA estão atualizados</li>
+            <li>Execute o comando "nvidia-smi" no prompt para verificar a GPU</li>
+        </ul>
+    </div>
+
+    <div class="warning">
+        <h3>Se a câmera RTSP não conectar:</h3>
+        <ul>
+            <li>Verifique se a URL está correta</li>
+            <li>Teste a URL em outro player (como VLC)</li>
+            <li>Verifique se há firewall bloqueando a conexão</li>
+        </ul>
+    </div>
+
+    <div class="warning">
+        <h3>Logs e diagnóstico:</h3>
+        <ul>
+            <li>Verifique o arquivo "table_tracker.log" para mais detalhes de erros</li>
+        </ul>
+    </div>
+
+    <h2>SUPORTE</h2>
+
+    <div class="note">
+        <p>Em caso de problemas, entre em contato com a equipe de suporte técnico.</p>
+    </div>
+</body>
+</html> 

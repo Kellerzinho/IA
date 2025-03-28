@@ -1,0 +1,28 @@
+[1;36m==========================================================
+      INSTRUÇÕES PARA CRIAR ATALHO DO MONITOR DE MESAS
+==========================================================[0m
+
+[1;33mSiga os passos abaixo para criar um atalho na área de trabalho
+que permita iniciar o Monitor de Mesas com apenas um clique:[0m
+
+[1;32m1.[0m Clique com o botão direito na [1;97márea de trabalho[0m
+[1;32m2.[0m Selecione [1;97m"Novo" > "Atalho"[0m
+[1;32m3.[0m No campo [1;97m"Digite o local do item"[0m, insira:
+   [1;93m%windir%\system32\cmd.exe /c "cd /d "%~dp0" && iniciar_monitor.bat"[0m
+[1;32m4.[0m Clique em [1;97m"Avançar"[0m
+[1;32m5.[0m Dê o nome [1;97m"Monitor de Mesas"[0m ao atalho
+[1;32m6.[0m Clique em [1;97m"Concluir"[0m
+
+[1;36m▶ PERSONALIZANDO O ATALHO (OPCIONAL)[0m
+
+[1;32m7.[0m Clique com o botão direito no atalho criado
+[1;32m8.[0m Selecione [1;97m"Propriedades"[0m
+[1;32m9.[0m Clique em [1;97m"Alterar ícone"[0m
+[1;32m10.[0m Selecione um ícone de sua preferência
+[1;32m11.[0m Na aba [1;97m"Atalho"[0m, em [1;97m"Executar"[0m, selecione [1;97m"Minimizado"[0m
+[1;32m12.[0m Clique em [1;97m"OK"[0m para salvar as alterações
+
+[1;33m==========================================================
+Observação: Para visualizar essas cores corretamente, 
+abra este arquivo em um terminal compatível com cores ANSI.
+==========================================================[0m 

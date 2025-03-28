@@ -29,9 +29,10 @@ def install_dependencies():
     except ImportError:
         print("PyTorch não está instalado. Será instalado a seguir.")
     
-    # Lista de pacotes necessários
+    # Lista de pacotes necessários - ajustada para resolver problemas de CUDA
     dependencies = [
-        "torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118",  # PyTorch com CUDA 11.8
+        "torch>=2.0.0 --extra-index-url https://download.pytorch.org/whl/cu118",  # PyTorch com CUDA 11.8
+        "torchvision>=0.15.0 --extra-index-url https://download.pytorch.org/whl/cu118",  # Necessário para NMS
         "ultralytics==8.0.196",
         "numpy>=1.23.5",
         "opencv-python>=4.7.0.72",
@@ -61,6 +62,18 @@ def install_dependencies():
             else:
                 print("\n⚠️ AVISO: PyTorch instalado, mas CUDA ainda não está disponível.")
                 print("Pode ser necessário reiniciar o computador ou verificar a instalação do CUDA.")
+                
+                # Instrução adicional para verificação do CUDA
+                print("\nPara verificar se o CUDA está instalado corretamente, execute:")
+                if platform.system() == "Windows":
+                    print("nvidia-smi")
+                else:
+                    print("nvidia-smi ou lspci | grep -i nvidia")
+                
+                # Sugestão para instalação manual se necessário
+                print("\nSe precisar, você pode instalar manualmente com:")
+                print("pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu118")
+                
                 return False
         except ImportError:
             print("Erro ao verificar instalação do PyTorch.")

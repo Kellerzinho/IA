@@ -1,6 +1,6 @@
 {
     "camera": {
-        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:47867/cam/realmonitor?channel=11&subtype=0",
+        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:44513/cam/realmonitor?channel=11&subtype=0",
         "comment": "URL da câmera RTSP. Modifique conforme necessário."
     },
     "dashboard": {
@@ -10,7 +10,7 @@
     "model": {
         "path": "roboflow.pt",
         "conf": 0.1,
-        "mao_conf": 0.8,
+        "mao_conf": 0.5,
         "pessoa_conf": 0.3,
         "iou": 0.4,
         "agnostic_nms": true

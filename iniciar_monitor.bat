@@ -18,8 +18,8 @@ if %errorlevel% neq 0 (
 )
 
 :: Verifica se o modelo existe
-if not exist roboflow.pt (
-    echo [ERRO] Modelo de deteccao (roboflow.pt) nao encontrado!
+if not exist people.pt (
+    echo [ERRO] Modelo de deteccao (people.pt) nao encontrado!
     echo O sistema nao conseguira detectar pessoas e mesas sem o modelo.
     echo.
     echo Pressione qualquer tecla para sair...

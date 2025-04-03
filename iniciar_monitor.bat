@@ -108,6 +108,7 @@ echo.
 echo [AVISO] Iniciando em modo de depuracao para diagnosticar problemas de deteccao de pessoas
 
 set CUDA_LAUNCH_BLOCKING=1
+set OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp
 python people.py
 
 echo.

@@ -4,7 +4,8 @@
         "comment": "URL da câmera RTSP. Modifique conforme necessário."
     },
     "dashboard": {
-        "url": "http://localhost:3310",
+        "url": "http://localhost:3300/api/queue/updateTables",
+        "http_method": "PUT",
         "comment": "URL do dashboard para envio de notificações."
     },
     "model": {

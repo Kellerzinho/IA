@@ -65,6 +65,9 @@ class AppConfig:
         4: "Mesa 4L", 5: "Mesa 6L", 6: "Mesa 8L", 7: "Mão", 8: "Pessoa"
     })
     
+    # Configuração do método HTTP para dashboard
+    dashboard_http_method: str = 'PUT'
+    
     @classmethod
     def load_from_json(cls, json_file='config.json'):
         """Carrega configurações a partir de um arquivo JSON."""
@@ -83,8 +86,11 @@ class AppConfig:
                 config.camera_url = data['camera']['url']
             
             # Dashboard
-            if 'dashboard' in data and 'url' in data['dashboard']:
-                config.dashboard_url = data['dashboard']['url']
+            if 'dashboard' in data:
+                if 'url' in data['dashboard']:
+                    config.dashboard_url = data['dashboard']['url']
+                if 'http_method' in data['dashboard']:
+                    config.dashboard_http_method = data['dashboard']['http_method'].upper()
             
             # Model params
             if 'model' in data:
@@ -186,8 +192,10 @@ class TableManager:
                 
                 headers = {'Content-Type': 'application/json'}
                 self.logger.debug(f"[DASHBOARD] URL destino: {self.config.dashboard_url}")
+                self.logger.debug(f"[DASHBOARD] Método HTTP: {self.config.dashboard_http_method}")
                 
-                resp = requests.post(
+                # Usa o método PUT para enviar as notificações
+                resp = requests.put(
                     self.config.dashboard_url,
                     data=mensagem,
                     headers=headers,

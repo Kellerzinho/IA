@@ -1,6 +1,6 @@
 {
     "camera": {
-        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:12189/cam/realmonitor?channel=11&subtype=0",
+        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:34325/cam/realmonitor?channel=11&subtype=0",
         "comment": "URL da câmera RTSP. Modifique conforme necessário."
     },
     "dashboard": {
@@ -9,7 +9,7 @@
     },
     "model": {
         "path": "people.pt",
-        "conf": 0.1,
+        "conf": 0.4,
         "mao_conf": 0.5,
         "pessoa_conf": 0.15,
         "iou": 0.4,
@@ -24,7 +24,7 @@
         "alpha": 0.4,
         "max_missed_time": 10,
         "confirm_time": 10,
-        "state_change_delay": 6,
+        "state_change_delay": 3,
         "distance_threshold": 80,
         "mao_confirm_time": 2,
         "atendimento_timeout": 20,

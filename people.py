@@ -157,37 +157,65 @@ class TableManager:
 
     def setup_logger(self):
         self.logger = logging.getLogger('TableTracker')
-        self.logger.setLevel(logging.INFO)
+        # Muda o nível para DEBUG para capturar mensagens de depuração
+        self.logger.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
         ch.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1))
 
+        # Arquivo específico para logs de debug com dashboard
+        dh = logging.FileHandler('dashboard_debug.log', encoding='utf-8')
+        dh.setFormatter(formatter)
+        dh.setLevel(logging.DEBUG)
+
         fh = logging.FileHandler('table_tracker.log', encoding='utf-8')
         fh.setFormatter(formatter)
+        fh.setLevel(logging.INFO)  # O arquivo principal continua com INFO
 
         self.logger.addHandler(ch)
         self.logger.addHandler(fh)
+        self.logger.addHandler(dh)
 
     def notificar_dashboard(self, mensagem: str):
         """Envia notificação para o dashboard via thread separada."""
         def enviar_notificacao(mensagem):
             try:
+                self.logger.debug(f"[DASHBOARD] Tentando enviar: {mensagem[:100]}...")
+                
                 headers = {'Content-Type': 'application/json'}
+                self.logger.debug(f"[DASHBOARD] URL destino: {self.config.dashboard_url}")
+                
                 resp = requests.post(
                     self.config.dashboard_url,
                     data=mensagem,
                     headers=headers,
                     timeout=3
                 )
-                if resp.status_code != 200:
+                
+                if resp.status_code == 200:
+                    self.logger.debug(f"[DASHBOARD] Notificação enviada com sucesso")
+                else:
                     self.logger.error(f"[DASHBOARD] Falha ao enviar notificação: {resp.status_code}")
+                    self.logger.error(f"[DASHBOARD] Resposta: {resp.text[:100]}...")
             except requests.exceptions.RequestException as e:
                 self.logger.error(f"[DASHBOARD] Falha na conexão: {str(e)}")
+                self.logger.error(f"[DASHBOARD] URL tentada: {self.config.dashboard_url}")
             except Exception as e:
                 self.logger.error(f"[DASHBOARD] Erro inesperado: {str(e)}")
+                import traceback
+                self.logger.error(f"[DASHBOARD] Traceback: {traceback.format_exc()}")
     
+        # Verificação básica de mensagem
+        try:
+            # Valida se a mensagem é JSON válido
+            json.loads(mensagem)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"[DASHBOARD] Mensagem inválida (não é JSON): {str(e)}")
+            return
+            
+        self.logger.debug(f"[DASHBOARD] Iniciando thread para envio de notificação")
         thread = threading.Thread(target=enviar_notificacao, args=(mensagem,))
         thread.daemon = True
         thread.start()
@@ -798,10 +826,15 @@ class TableManager:
         # Desenhar linhas de associação entre pessoas e mesas (se habilitado)
         if self.config.show_association_lines and hasattr(self, 'person_table_associations'):
             for person_box, table_box, table_id in self.person_table_associations:
-                px = (person_box[0] + person_box[2]) // 2
-                py = (person_box[1] + person_box[3]) // 2
+                # Usa a parte inferior central da pessoa (pés)
+                px = (person_box[0] + person_box[2]) // 2  # x central
+                py = person_box[3]  # y mais baixo (pés da pessoa)
+                
+                # Centro da mesa permanece o mesmo
                 tx = (table_box[0] + table_box[2]) // 2
                 ty = (table_box[1] + table_box[3]) // 2
+                
+                # Desenha a linha de associação
                 cv2.line(frame, (px, py), (tx, ty), (0, 255, 255), 1)
 
         # Desenhar mãos detectadas
@@ -986,6 +1019,18 @@ def main():
     config = AppConfig.load_from_json()
     table_manager = TableManager(config)
     
+    # Testar conectividade com o dashboard
+    try:
+        table_manager.logger.info(f"Testando conexão com o dashboard: {config.dashboard_url}")
+        test_response = requests.get(
+            config.dashboard_url, 
+            timeout=5
+        )
+        table_manager.logger.info(f"Conexão com dashboard OK: {test_response.status_code}")
+    except Exception as e:
+        table_manager.logger.warning(f"Aviso: Não foi possível conectar ao dashboard: {str(e)}")
+        table_manager.logger.warning(f"As notificações podem não ser entregues. Verifique config.dashboard_url")
+    
     # Carrega modelo YOLO e força o uso de CUDA
     model = YOLO(config.model_path)
     model.to('cuda')
@@ -1111,7 +1156,18 @@ def main():
             # Notificação de estado a cada 1s
             if (current_time - last_second_notification) >= 1:
                 snapshot = table_manager.build_current_states_snapshot(current_time)
-                table_manager.notificar_dashboard(json.dumps(snapshot))
+                
+                # Log das mesas no snapshot
+                if config.debug_mode:
+                    table_manager.logger.debug(f"Enviando snapshot com {len(snapshot['mesas'])} mesas:")
+                    for mesa in snapshot['mesas']:
+                        table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
+                
+                # Enviar notificação do snapshot atual
+                snapshot_json = json.dumps(snapshot)
+                table_manager.notificar_dashboard(snapshot_json)
+                
+                # Registra timestamp da última notificação enviada
                 last_second_notification = current_time
 
             # Log estatísticas a cada 300s

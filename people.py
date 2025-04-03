@@ -213,9 +213,14 @@ class TableManager:
                 'ultimo_atendimento': None,
                 'notificada_atendimento': False,
                 'creation_index': self.next_creation_index,
-                'occupant_count': 0
+                'occupant_count': 0,
+                'last_occupancy_change': current_time,
+                'pending_occupancy': None
             }
             self.next_creation_index += 1
+            
+            if self.config.debug_mode:
+                self.logger.info(f"Mesa {i} criada: tipo={cls} ({self.config.cls_names.get(cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(cls, 0)}")
         
         self.mesas_notificadas.clear()
 
@@ -317,10 +322,16 @@ class TableManager:
                     'precisa_atendimento': False,
                     'ultimo_atendimento': None,
                     'creation_index': self.next_creation_index,
-                    'occupant_count': 0
+                    'occupant_count': 0,
+                    # Garantir que os campos de controle de estado estejam presentes
+                    'last_occupancy_change': current_time,
+                    'pending_occupancy': None
                 }
                 self.next_creation_index += 1
                 to_remove.append((det_cls, det_coords))
+                
+                if self.config.debug_mode:
+                    self.logger.info(f"Nova mesa {new_id} criada: tipo={det_cls} ({self.config.cls_names.get(det_cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(det_cls, 0)}")
 
         for key in to_remove:
             del self.pending_new_tables[key]
@@ -488,6 +499,7 @@ class TableManager:
                         lugares = self.config.cls_to_lugares.get(tdata['cls'], 0)
                         old_state = tdata['state']
                         
+                        # Determina o novo estado com base na contagem de ocupantes
                         if tdata['occupant_count'] >= lugares:
                             new_state = 'CHEIA'
                         elif tdata['occupant_count'] > 0:
@@ -495,14 +507,23 @@ class TableManager:
                         else:
                             new_state = 'VAZIA'
                         
-                        # Atualiza o estado e registra a mudança
+                        # Atualiza o estado explicitamente
+                        if self.config.debug_mode:
+                            self.logger.info(f"Timeout atendimento Mesa {tid}: mudando de {old_state} para {new_state} (occupant_count={tdata['occupant_count']}, lugares={lugares})")
+                        
+                        # Atualiza estado e notifica a mudança
                         tdata['state'] = new_state
-                        self._log_state_change(tid, old_state, new_state)
+                        
+                        # Só chama _log_state_change se realmente houve mudança
+                        if old_state != new_state:
+                            self._log_state_change(tid, old_state, new_state)
 
+                        # Limpa flags de atendimento
                         tdata['precisa_atendimento'] = False
                         tdata['ultimo_atendimento'] = None
                         if tid in self.mesas_notificadas:
                             self.mesas_notificadas.remove(tid)
+                        
                         self.logger.info(f"Atendimento da Mesa {tid} expirado")
 
     # -------------------------------------------------------
@@ -527,45 +548,64 @@ class TableManager:
             if len(person_box) != 4 or len(table_box) != 4:
                 return float('inf')
             
+            # Usamos o centro da pessoa e da mesa para calcular distância
             px = (person_box[0] + person_box[2]) / 2
             py = (person_box[1] + person_box[3]) / 2
             tx = (table_box[0] + table_box[2]) / 2
             ty = (table_box[1] + table_box[3]) / 2
+            
+            # Distância euclidiana simples
             return np.sqrt((px - tx)**2 + (py - ty)**2)
 
         # Lista para armazenar associações pessoa-mesa para visualização
         person_table_associations = []
         
+        # PARTE 1: Associar pessoas às mesas
         for p_cls, p_coords in people:
             # Para cada pessoa, acha a mesa mais próxima
             melhor_id = None
             menor_dist = float('inf')
+            
+            if self.config.debug_mode:
+                self.logger.info(f"Processando pessoa: centro=({(p_coords[0] + p_coords[2])/2:.1f}, {(p_coords[1] + p_coords[3])/2:.1f})")
+                
             for tid, tdata in self.tables.items():
                 # Se mesa está em STANDBY, ignore
                 if tdata['state'] == 'STANDBY':
                     continue
+                    
                 d = dist_person_table(p_coords, tdata['coords'])
+                
+                if self.config.debug_mode:
+                    self.logger.info(f"  Distância para Mesa {tid}: {d:.1f} pixels")
+                    
                 if d < menor_dist:
                     menor_dist = d
                     melhor_id = tid
             
             # Usa o parâmetro de configuração para a distância máxima
             max_dist = self.config.tracking_params.get('pessoa_to_table_max_dist', 200)
+            
             if melhor_id is not None and menor_dist < max_dist:
                 self.tables[melhor_id]['occupant_count'] += 1
                 person_table_associations.append((p_coords, self.tables[melhor_id]['coords'], melhor_id))
                 
-                # Verifica se configuramos o tracking de tempo - inicializa se necessário
-                if not hasattr(self.tables[melhor_id], 'last_occupancy_change'):
+                if self.config.debug_mode:
+                    self.logger.info(f"  ASSOCIADA à Mesa {melhor_id} (distância: {menor_dist:.1f}px)")
+                
+                # Garante que a mesa tenha as propriedades necessárias
+                # Inicializa o campo last_occupancy_change se ainda não existir
+                if 'last_occupancy_change' not in self.tables[melhor_id]:
                     self.tables[melhor_id]['last_occupancy_change'] = time.time()
+                if 'pending_occupancy' not in self.tables[melhor_id]:
                     self.tables[melhor_id]['pending_occupancy'] = None
 
         # Armazena as associações para visualização
         self.person_table_associations = person_table_associations
         
-        # Agora atualiza estado das mesas com base no occupant_count
+        # PARTE 2: Atualizar estados com base na contagem
         current_time = time.time()
-        state_change_delay = self.config.tracking_params.get('state_change_delay', 3)
+        state_change_delay = self.config.tracking_params.get('state_change_delay', 1)
         
         for tid, tdata in self.tables.items():
             if tdata['state'] == 'STANDBY':
@@ -576,40 +616,58 @@ class TableManager:
             current_count = tdata['occupant_count']
             previous_count = previous_counts.get(tid, 0)
             
-            # Verifica mudanças significativas na contagem de ocupantes
-            if abs(current_count - previous_count) > 0:
-                # Registra o momento da mudança
+            # Força inicialização de campos necessários
+            if 'last_occupancy_change' not in tdata:
                 tdata['last_occupancy_change'] = current_time
-                
-                # Determina o estado pendente baseado na contagem atual
-                if current_count == 0:
-                    tdata['pending_occupancy'] = 'VAZIA'
-                elif current_count >= lugares:
-                    tdata['pending_occupancy'] = 'CHEIA'
-                else:
-                    tdata['pending_occupancy'] = 'OCUPADA'
-                    
-                # Registra no log a mudança de ocupação
-                self.logger.info(f"Mesa {tid}: Mudança de ocupação {previous_count} -> {current_count}")
+            if 'pending_occupancy' not in tdata:
+                tdata['pending_occupancy'] = None
             
-            # Se está em atendimento, só atualiza occupant_count e permanece em ATENDIMENTO
+            # Determina diretamente o novo estado com base na contagem
+            if current_count == 0:
+                target_state = 'VAZIA'
+            elif current_count >= lugares:
+                target_state = 'CHEIA'
+            else:
+                target_state = 'OCUPADA'
+            
+            # Verifica mudanças na contagem ou no estado alvo
+            if (current_count != previous_count) or (tdata['pending_occupancy'] != target_state):
+                # Registra o momento da mudança e atualiza estado pendente
+                tdata['last_occupancy_change'] = current_time
+                tdata['pending_occupancy'] = target_state
+                
+                # Registra no log a mudança de ocupação
+                if self.config.debug_mode:
+                    self.logger.info(f"Mesa {tid}: Mudança de ocupação {previous_count} -> {current_count} (alvo: {target_state})")
+            
+            # Se está em atendimento, não muda o estado
             if tdata['precisa_atendimento']:
                 continue
                 
-            # Se tem estado pendente e passou tempo suficiente desde a última mudança
-            if 'pending_occupancy' in tdata and tdata['pending_occupancy'] is not None:
-                time_since_change = current_time - tdata.get('last_occupancy_change', 0)
+            # Aplica o estado pendente após o delay
+            if tdata['pending_occupancy'] is not None:
+                time_since_change = current_time - tdata['last_occupancy_change']
                 
+                # Quando passar o tempo de delay OU
+                # Quando a mesa já tenha registrado ocupantes por frame consecutivos
                 if time_since_change >= state_change_delay:
                     new_state = tdata['pending_occupancy']
                     
-                    # Só atualiza se o estado for diferente
+                    # Atualiza o estado se for diferente do atual
                     if new_state != old_state:
+                        if self.config.debug_mode:
+                            self.logger.info(f"MUDANÇA ESTADO Mesa {tid}: {old_state} -> {new_state} (delay={time_since_change:.1f}s, ocupantes={current_count}/{lugares})")
+                        
                         tdata['state'] = new_state
                         self._log_state_change(tid, old_state, new_state)
-                        
-                        # Reinicia estado pendente
-                        tdata['pending_occupancy'] = None
+                    else:
+                        if self.config.debug_mode:
+                            self.logger.info(f"Estado mantido Mesa {tid}: {old_state} (ocupantes={current_count}/{lugares})")
+                    
+                    # Não reinicia o estado pendente para permitir que atualizações futuras ocorram mais rapidamente
+                    # quando a situação atual já tiver sido confirmada
+                elif self.config.debug_mode and time_since_change > 0:
+                    self.logger.info(f"Aguardando delay Mesa {tid}: pendente={tdata['pending_occupancy']}, atual={old_state}, tempo={time_since_change:.1f}/{state_change_delay}s")
 
     # -------------------------------------------------------
     #   STATÍSTICAS
@@ -821,15 +879,33 @@ def calculate_iou(box1, box2):
 
 
 def process_people_detections(detected_people_raw, previous_people):
-    """Processa detecções de pessoas para filtrar overlaps excessivos e estabilizar detecções."""
-    # Se não há detecções, retorna lista vazia
+    """
+    Processa detecções de pessoas para:
+    1. Filtrar overlaps excessivos (NMS adicional)
+    2. Estabilizar detecções usando frames anteriores
+    3. Melhorar persistência de pessoas detectadas
+    
+    Args:
+        detected_people_raw: Lista de tuplas (cls_id, coords, conf)
+        previous_people: Lista de tuplas (cls_id, coords) do frame anterior
+        
+    Returns:
+        Lista filtrada de tuplas (cls_id, coords)
+    """
+    # Se não há detecções, verifica o histórico
+    if not detected_people_raw and previous_people:
+        # Mantém detecções anteriores mas com confiança reduzida
+        # Isso ajuda a manter pessoas que temporariamente não foram detectadas
+        print(f"Sem detecções novas, usando {len(previous_people)} detecções anteriores com menor confiança")
+        return previous_people
+    
     if not detected_people_raw:
         return []
     
     # Ordena por confiança (maior para menor)
     detected_people_raw.sort(key=lambda x: x[2], reverse=True)
     
-    # Implementa um NMS simples para remover overlaps
+    # Implementa um NMS suavizado para remover overlaps, mas com threshold mais baixo
     filtered_detections = []
     for i, (cls_id, coords, conf) in enumerate(detected_people_raw):
         should_keep = True
@@ -837,26 +913,26 @@ def process_people_detections(detected_people_raw, previous_people):
         # Verifica overlap com detecções já aceitas
         for _, accepted_coords, _ in filtered_detections:
             iou = calculate_iou(coords, accepted_coords)
-            if iou > 0.5:  # Se overlap > 50%, descarta
+            if iou > 0.4:  # Reduzido de 0.5 para 0.4 para ser mais conservador com overlaps
                 should_keep = False
                 break
         
         if should_keep:
             filtered_detections.append((cls_id, coords, conf))
     
-    # Adiciona o mecanismo de "memória": tenta associar com detecções anteriores
+    # Adiciona o mecanismo de "memória": associa com detecções anteriores e suaviza
     final_detections = []
+    
+    # Primeiro, adiciona as novas detecções filtradas
     for cls_id, coords, conf in filtered_detections:
-        # Essa pessoa já existe nas detecções anteriores?
         best_match = None
         best_dist = float('inf')
         
+        # Procura correspondência com detecções anteriores
         for prev_cls, prev_coords in previous_people:
-            # Verifica se os bounding boxes têm formatos válidos
             if len(coords) != 4 or len(prev_coords) != 4:
                 continue
-                
-            # Calcula distância entre centros
+            
             current_center = ((coords[0] + coords[2]) / 2, (coords[1] + coords[3]) / 2)
             prev_center = ((prev_coords[0] + prev_coords[2]) / 2, (prev_coords[1] + prev_coords[3]) / 2)
             
@@ -869,12 +945,38 @@ def process_people_detections(detected_people_raw, previous_people):
         
         final_coords = coords  # por padrão, usa a detecção atual
         
-        # Se temos um match com detecção anterior e está próximo o suficiente
-        if best_match is not None and best_dist < 50:
-            # Suaviza posição fazendo média ponderada
-            final_coords = update_box(best_match, coords, 0.6)  # 60% novo, 40% antigo
+        # Suaviza posição através de média ponderada com detecção anterior se próxima
+        if best_match is not None and best_dist < 80:  # Aumentado de 50 para 80 pixels
+            # Quanto mais próximo, mais confiança damos ao frame anterior
+            alpha = min(0.8, best_dist / 80.0)  # Alpha entre 0 e 0.8 com base na distância
+            final_coords = update_box(best_match, coords, alpha)
             
         final_detections.append((cls_id, final_coords))
+    
+    # Segundo, verifica se há detecções anteriores que não foram associadas a novas
+    # e as mantém por um tempo para evitar oscilações
+    prev_centers = set()
+    for cls_id, coords in final_detections:
+        center_x = (coords[0] + coords[2]) / 2
+        center_y = (coords[1] + coords[3]) / 2
+        prev_centers.add((center_x, center_y))
+    
+    # Adiciona pessoas do frame anterior que não foram associadas (persistência)
+    for prev_cls, prev_coords in previous_people:
+        prev_center_x = (prev_coords[0] + prev_coords[2]) / 2
+        prev_center_y = (prev_coords[1] + prev_coords[3]) / 2
+        
+        # Verifica se essa pessoa já está próxima de alguma das novas detecções
+        found_close = False
+        for cx, cy in prev_centers:
+            dist = np.sqrt((cx - prev_center_x)**2 + (cy - prev_center_y)**2)
+            if dist < 100:  # Se estiver dentro de 100 pixels, considere a mesma pessoa
+                found_close = True
+                break
+        
+        # Se não encontramos ninguém próximo, mantemos a detecção anterior
+        if not found_close:
+            final_detections.append((prev_cls, prev_coords))
     
     return final_detections
 

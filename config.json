@@ -11,14 +11,14 @@
         "path": "roboflow.pt",
         "conf": 0.1,
         "mao_conf": 0.5,
-        "pessoa_conf": 0.3,
+        "pessoa_conf": 0.15,
         "iou": 0.4,
         "agnostic_nms": true
     },
     "detection": {
         "show_people_boxes": true,
         "show_association_lines": true,
-        "debug_mode": false
+        "debug_mode": true
     },
     "tracking_params": {
         "alpha": 0.4,
@@ -32,7 +32,7 @@
         "mao_horizontal_threshold": 150,
         "peso_horizontal": 2,
         "peso_vertical": 0.8,
-        "pessoa_to_table_max_dist": 100
+        "pessoa_to_table_max_dist": 150
     },
     "table_capacities": {
         "0": 10,

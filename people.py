@@ -349,8 +349,8 @@ class TableManager:
         """Faz log e envia notificação quando a mesa muda de estado."""
         self.logger.info(f"Mesa {table_id} mudou de {old_state} para {new_state}")
         
-        # Se ficou VAZIA e antes era CHEIA, notifcar "mesa liberada"
-        if new_state == 'VAZIA' and old_state == 'CHEIA':
+        # Se ficou VAZIA e antes era CHEIA ou OCUPADA, notificar "mesa liberada"
+        if new_state == 'VAZIA' and old_state in ['CHEIA', 'OCUPADA']:
             lugares = self.config.cls_to_lugares.get(self.tables[table_id]['cls'], 0)
             msg_terminal = f"LIBEROU {lugares} LUGARES - Mesa {table_id}"
             self.logger.info(msg_terminal)
@@ -486,12 +486,18 @@ class TableManager:
                     if (current_time - ultimo) > self.config.tracking_params['atendimento_timeout']:
                         # se ainda tem pessoas, volta a CHEIA; senão, VAZIA
                         lugares = self.config.cls_to_lugares.get(tdata['cls'], 0)
+                        old_state = tdata['state']
+                        
                         if tdata['occupant_count'] >= lugares:
-                            tdata['state'] = 'CHEIA'
+                            new_state = 'CHEIA'
                         elif tdata['occupant_count'] > 0:
-                            tdata['state'] = 'OCUPADA'
+                            new_state = 'OCUPADA'
                         else:
-                            tdata['state'] = 'VAZIA'
+                            new_state = 'VAZIA'
+                        
+                        # Atualiza o estado e registra a mudança
+                        tdata['state'] = new_state
+                        self._log_state_change(tid, old_state, new_state)
 
                         tdata['precisa_atendimento'] = False
                         tdata['ultimo_atendimento'] = None
@@ -602,17 +608,6 @@ class TableManager:
                         tdata['state'] = new_state
                         self._log_state_change(tid, old_state, new_state)
                         
-                        # Notifica dashboard sobre mudança de estado
-                        if new_state == 'VAZIA' and old_state in ('CHEIA', 'OCUPADA'):
-                            lugares = self.config.cls_to_lugares.get(tdata['cls'], 0)
-                            msg_dashboard = {
-                                "tipo": "mesa_liberada",
-                                "mesa_id": tid,
-                                "lugares": lugares,
-                                "timestamp": current_time
-                            }
-                            self.notificar_dashboard(json.dumps(msg_dashboard))
-                            
                         # Reinicia estado pendente
                         tdata['pending_occupancy'] = None
 

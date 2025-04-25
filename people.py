@@ -865,16 +865,35 @@ class TableManager:
 
         # Mostra estatísticas
         stats = self.get_occupancy_stats()
+        
+        # Versão simplificada do status - sem mesas em standby e atendimento
         stxt = (
-            f"Mesas: {stats['total_mesas']} | "
+            f"Mesas: {stats['total_mesas'] - stats['standby']} | "
             f"Ocupadas: {stats['ocupadas']} | "
-            f"Atendimento: {stats['atendimento']} | "
-            f"Standby: {stats['standby']} | "
-            f"Pessoas: {stats['occupant_sum']}/{stats['capacity_sum']} | "
-            f"Taxa: {stats['taxa_ocupacao']:.0%}"
+            f"Pessoas: {stats['occupant_sum']}/{stats['capacity_sum']}"
         )
         cv2.putText(frame, stxt, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        # Destaque para a taxa de ocupação
+        taxa_txt = f"Taxa: {stats['taxa_ocupacao']:.0%}"
+        tx_width = cv2.getTextSize(taxa_txt, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0][0]
+        
+        # Desenha um fundo para destacar a taxa
+        cv2.rectangle(frame, 
+                        (frame.shape[1] - tx_width - 20, 10), 
+                        (frame.shape[1] - 10, 50), 
+                        (0, 0, 60), 
+                        -1)  # -1 para preencher o retângulo
+        
+        # Desenha a taxa com tamanho maior e em destaque
+        cv2.putText(frame, 
+                    taxa_txt, 
+                    (frame.shape[1] - tx_width - 15, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 
+                    1.2,  # Fonte maior 
+                    (0, 165, 255),  # Cor laranja para destaque
+                    3)  # Espessura maior
                     
         # Mostrar informações adicionais em modo debug
         if self.config.debug_mode:

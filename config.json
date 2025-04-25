@@ -10,8 +10,8 @@
     },
     "model": {
         "path": "peoplev2.pt",
-        "conf": 0.4,
-        "mao_conf": 0.5,
+        "conf": 0.2,
+        "mao_conf": 0.7,
         "pessoa_conf": 0.15,
         "iou": 0.4,
         "agnostic_nms": true
@@ -31,8 +31,8 @@
         "atendimento_timeout": 20,
         "mao_vertical_threshold": 250,
         "mao_horizontal_threshold": 150,
-        "peso_horizontal": 2,
-        "peso_vertical": 0.8,
+        "peso_horizontal": 0.6,
+        "peso_vertical": 0.6,
         "pessoa_to_table_max_dist": 150
     },
     "table_capacities": {

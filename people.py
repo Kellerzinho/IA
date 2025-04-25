@@ -13,6 +13,7 @@ import torch
 import threading
 from collections import OrderedDict
 import os
+import re
 
 # Forçar o uso de CUDA (GPU) para processamento
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -28,6 +29,9 @@ if not torch.cuda.is_available():
 device = torch.device('cuda')
 print(f"Usando dispositivo: {device} - {torch.cuda.get_device_name(0)}")
 print(f"Memória GPU total: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
+# Constante para o arquivo que guarda a última porta
+LAST_PORT_FILE = 'last_used_port.txt'
 
 @dataclass
 class AppConfig:
@@ -379,13 +383,13 @@ class TableManager:
                 time_missing = current_time - tdata['last_seen']
                 if time_missing > self.config.tracking_params['max_missed_time']:
                     tdata['state'] = "STANDBY"
-                updated_tables[tid] = tdata
+                    updated_tables[tid] = tdata
 
     def _update_existing_table(self, table_id, det_cls, det_coords, current_time, updated_tables):
         """Faz a atualização de uma mesa existente com a nova detecção (fusão)."""
         table_data = self.tables[table_id]
         new_coords = update_box(table_data['coords'], det_coords, self.config.tracking_params['alpha'])
-        
+
         # Atualiza coords / last_seen
         table_data['coords'] = new_coords
         table_data['last_seen'] = current_time
@@ -657,7 +661,7 @@ class TableManager:
                 tdata['last_occupancy_change'] = current_time
             if 'pending_occupancy' not in tdata:
                 tdata['pending_occupancy'] = None
-            
+                
             # Determina diretamente o novo estado com base na contagem
             if current_count == 0:
                 target_state = 'VAZIA'
@@ -671,7 +675,7 @@ class TableManager:
                 # Registra o momento da mudança e atualiza estado pendente
                 tdata['last_occupancy_change'] = current_time
                 tdata['pending_occupancy'] = target_state
-                
+                    
                 # Registra no log a mudança de ocupação
                 if self.config.debug_mode:
                     self.logger.info(f"Mesa {tid}: Mudança de ocupação {previous_count} -> {current_count} (alvo: {target_state})")
@@ -883,6 +887,62 @@ class TableManager:
             cv2.putText(frame, debug_info, (10, frame.shape[0] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
+def get_last_used_port():
+    """Lê a última porta usada do arquivo."""
+    try:
+        if os.path.exists(LAST_PORT_FILE):
+            with open(LAST_PORT_FILE, 'r') as f:
+                return f.read().strip()
+    except Exception as e:
+        print(f"Erro ao ler última porta usada: {e}")
+    return None
+
+def save_last_used_port(port):
+    """Salva a porta usada no arquivo."""
+    try:
+        with open(LAST_PORT_FILE, 'w') as f:
+            f.write(str(port))
+    except Exception as e:
+        print(f"Erro ao salvar última porta usada: {e}")
+
+def get_dynamic_camera_url(base_url):
+    """Solicita a porta ao usuário e atualiza a URL."""
+    last_port = get_last_used_port()
+    prompt = f"Digite a porta para a câmera RTSP"
+    if last_port:
+        prompt += f" (última: {last_port}, deixe em branco para usar): "
+    else:
+        prompt += ": "
+
+    while True:
+        user_input = input(prompt).strip()
+        if not user_input:
+            if last_port:
+                selected_port = last_port
+                print(f"Usando a última porta salva: {selected_port}")
+                break
+            else:
+                print("Nenhuma porta anterior encontrada. Por favor, insira uma porta.")
+        else:
+            # Validação simples (verifica se é número)
+            if user_input.isdigit():
+                selected_port = user_input
+                break
+            else:
+                print("Entrada inválida. Por favor, insira um número de porta.")
+
+    # Tenta substituir a porta na URL base
+    # Regex para encontrar @host:porta/
+    match = re.search(r"(@[^:]+):(\d+)/", base_url)
+    if match:
+        new_url = base_url[:match.start(2)] + selected_port + base_url[match.end(2):]
+        print(f"URL da câmera configurada para: {new_url}")
+        save_last_used_port(selected_port) # Salva a porta que será usada
+        return new_url
+    else:
+        print("Formato da URL inválido no config.json. Não foi possível encontrar '@host:porta/'. Usando URL original.")
+        return base_url
+
 
 def calculate_iou(box1, box2):
     """Calcula Intersection over Union (IoU) para dois bounding boxes."""
@@ -1026,6 +1086,9 @@ def main():
     # Carregar configurações do arquivo JSON
     config = AppConfig.load_from_json()
     table_manager = TableManager(config)
+
+    # Obter a URL da câmera dinamicamente
+    camera_url = get_dynamic_camera_url(config.camera_url)
     
     # Testar conectividade com o dashboard
     try:
@@ -1044,7 +1107,7 @@ def main():
     model.to('cuda')
     
     # Abre stream da câmera com configurações RTSP/TCP
-    cap = cv2.VideoCapture(config.camera_url)
+    cap = cv2.VideoCapture(camera_url)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
     cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
     cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)

@@ -1,6 +1,6 @@
 {
     "camera": {
-        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:34325/cam/realmonitor?channel=11&subtype=0",
+        "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:45724/cam/realmonitor?channel=11&subtype=0",
         "comment": "URL da câmera RTSP. Modifique conforme necessário."
     },
     "dashboard": {
@@ -9,7 +9,7 @@
         "comment": "URL do dashboard para envio de notificações."
     },
     "model": {
-        "path": "people.pt",
+        "path": "peoplev2.pt",
         "conf": 0.4,
         "mao_conf": 0.5,
         "pessoa_conf": 0.15,

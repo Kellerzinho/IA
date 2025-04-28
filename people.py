@@ -434,7 +434,8 @@ class TableManager:
                 "mesa_id": table_id,
                 "lugares": lugares,
                 "timestamp": time.time(),
-                "camera_id": camera_num
+                "camera_id": camera_num,
+                "restaurante": "CSVL"
             }
             self.notificar_dashboard(json.dumps(msg_dashboard))
 
@@ -551,7 +552,8 @@ class TableManager:
                             "tipo": "atendimento_requisitado",
                             "mesa_id": melhor_id,
                             "timestamp": current_time,
-                            "camera_id": camera_num
+                            "camera_id": camera_num,
+                            "restaurante": "CSVL"
                         }
                         self.notificar_dashboard(json.dumps(msg_dashboard))
                         
@@ -791,6 +793,7 @@ class TableManager:
             "tipo": "estado_atual",
             "timestamp": current_time,
             "camera_id": camera_num,
+            "restaurante": "CSVL",
             "taxa_ocupacao": stats['taxa_ocupacao'],
             "total_lugares": stats['capacity_sum'],
             "total_pessoas": stats['occupant_sum'],

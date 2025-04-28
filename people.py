@@ -55,6 +55,9 @@ class AppConfig:
     model_agnostic_nms: bool = True
     model_path: str = 'roboflow.pt'
     
+    # Configurações de câmeras
+    cameras: List[Dict[str, str]] = field(default_factory=list)
+    
     # Classe para pessoas
     people_cls_id: int = 8
     
@@ -85,9 +88,10 @@ class AppConfig:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Camera
-            if 'camera' in data and 'url' in data['camera']:
-                config.camera_url = data['camera']['url']
+            # Câmeras (múltiplas)
+            if 'cameras' in data:
+                config.cameras = data['cameras']
+                print(f"Configuradas {len(config.cameras)} câmeras")
             
             # Dashboard
             if 'dashboard' in data:
@@ -153,7 +157,7 @@ def update_box(old_box, new_box, alpha=0.3):
 
 
 class TableManager:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, camera_id=None, camera_name=None):
         self.config = config
         
         self.tables: Dict[int, Dict] = {}  # ID da mesa -> dados da mesa
@@ -163,26 +167,32 @@ class TableManager:
         self.mesas_notificadas = set()
         self.next_creation_index = 1
         
+        # Identificação da câmera
+        self.camera_id = camera_id
+        self.camera_name = camera_name
+        
         self.setup_logger()
 
     def setup_logger(self):
-        self.logger = logging.getLogger('TableTracker')
+        self.logger = logging.getLogger('Monitor')
         # Muda o nível para DEBUG para capturar mensagens de depuração
         self.logger.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
+        # Console handler
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
         ch.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1))
 
-        # Arquivo específico para logs de debug com dashboard
-        dh = logging.FileHandler('dashboard_debug.log', encoding='utf-8')
+        # Arquivo único para todos os logs de dashboard
+        dh = logging.FileHandler('dashboard.log', encoding='utf-8')
         dh.setFormatter(formatter)
         dh.setLevel(logging.DEBUG)
 
-        fh = logging.FileHandler('table_tracker.log', encoding='utf-8')
+        # Arquivo único para todas as câmeras
+        fh = logging.FileHandler('monitor.log', encoding='utf-8')
         fh.setFormatter(formatter)
-        fh.setLevel(logging.INFO)  # O arquivo principal continua com INFO
+        fh.setLevel(logging.INFO)
 
         self.logger.addHandler(ch)
         self.logger.addHandler(fh)
@@ -222,7 +232,15 @@ class TableManager:
         # Verificação básica de mensagem
         try:
             # Valida se a mensagem é JSON válido
-            json.loads(mensagem)
+            json_obj = json.loads(mensagem)
+            
+            # Se ainda não processamos o camera_id em outro lugar, fazemos aqui
+            if "camera_id" in json_obj and isinstance(json_obj["camera_id"], str) and json_obj["camera_id"].startswith("camera"):
+                # Extrair apenas o número da câmera
+                json_obj["camera_id"] = self._extract_camera_number(json_obj["camera_id"])
+                # Recodifica para JSON
+                mensagem = json.dumps(json_obj)
+                
         except json.JSONDecodeError as e:
             self.logger.error(f"[DASHBOARD] Mensagem inválida (não é JSON): {str(e)}")
             return
@@ -398,20 +416,25 @@ class TableManager:
 
     def _log_state_change(self, table_id, old_state, new_state):
         """Faz log e envia notificação quando a mesa muda de estado."""
-        self.logger.info(f"Mesa {table_id} mudou de {old_state} para {new_state}")
+        camera_info = f"[{self.camera_name or self.camera_id or 'Câmera desconhecida'}] " if self.camera_id or self.camera_name else ""
+        self.logger.info(f"{camera_info}Mesa {table_id} mudou de {old_state} para {new_state}")
         
         # Se ficou VAZIA e antes era CHEIA ou OCUPADA, notificar "mesa liberada"
         if new_state == 'VAZIA' and old_state in ['CHEIA', 'OCUPADA']:
             lugares = self.config.cls_to_lugares.get(self.tables[table_id]['cls'], 0)
-            msg_terminal = f"LIBEROU {lugares} LUGARES - Mesa {table_id}"
+            msg_terminal = f"{camera_info}LIBEROU {lugares} LUGARES - Mesa {table_id}"
             self.logger.info(msg_terminal)
+            
+            # Extrair apenas o número da câmera
+            camera_num = self._extract_camera_number(self.camera_id)
             
             # Enviar para o dashboard
             msg_dashboard = {
                 "tipo": "mesa_liberada",
                 "mesa_id": table_id,
                 "lugares": lugares,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "camera_id": camera_num
             }
             self.notificar_dashboard(json.dumps(msg_dashboard))
 
@@ -517,13 +540,18 @@ class TableManager:
                     self.tables[melhor_id]['ultimo_atendimento'] = current_time
                     
                     if melhor_id not in self.mesas_notificadas:
-                        msg_terminal = f"ATENDIMENTO: Mesa {melhor_id}"
+                        camera_info = f"[{self.camera_name or self.camera_id or 'Câmera desconhecida'}] " if self.camera_id or self.camera_name else ""
+                        msg_terminal = f"{camera_info}ATENDIMENTO: Mesa {melhor_id}"
                         self.logger.info(msg_terminal)
+                        
+                        # Extrair apenas o número da câmera
+                        camera_num = self._extract_camera_number(self.camera_id)
                         
                         msg_dashboard = {
                             "tipo": "atendimento_requisitado",
                             "mesa_id": melhor_id,
                             "timestamp": current_time,
+                            "camera_id": camera_num
                         }
                         self.notificar_dashboard(json.dumps(msg_dashboard))
                         
@@ -745,11 +773,27 @@ class TableManager:
             'taxa_ocupacao': taxa
         }
 
+    def _extract_camera_number(self, camera_id):
+        """Extrai apenas o número da câmera do ID (ex: 'camera11' -> '11')"""
+        if isinstance(camera_id, str) and camera_id.startswith("camera"):
+            return camera_id.replace("camera", "")
+        return camera_id
+        
     def build_current_states_snapshot(self, current_time: float) -> Dict:
         """Monta o snapshot das mesas para enviar ao dashboard."""
+        # Obter estatísticas para incluir taxa de ocupação
+        stats = self.get_occupancy_stats()
+        
+        # Extrair apenas o número da câmera
+        camera_num = self._extract_camera_number(self.camera_id)
+        
         snapshot = {
             "tipo": "estado_atual",
             "timestamp": current_time,
+            "camera_id": camera_num,
+            "taxa_ocupacao": stats['taxa_ocupacao'],
+            "total_lugares": stats['capacity_sum'],
+            "total_pessoas": stats['occupant_sum'],
             "mesas": []
         }
     
@@ -1101,13 +1145,16 @@ def process_people_detections(detected_people_raw, previous_people):
     return final_detections
 
 
-def main():
-    # Carregar configurações do arquivo JSON
-    config = AppConfig.load_from_json()
-    table_manager = TableManager(config)
-
-    # Obter a URL da câmera dinamicamente
-    camera_url = get_dynamic_camera_url(config.camera_url)
+def process_camera(camera_config, config):
+    """Processa uma câmera específica em uma thread separada."""
+    camera_id = camera_config.get('id', 'camera_desconhecida')
+    camera_name = camera_config.get('name', f'Câmera {camera_id}')
+    camera_url = camera_config.get('url', '')
+    
+    print(f"Iniciando processamento da {camera_name} ({camera_id})")
+    
+    # Criar gerenciador de mesas específico para esta câmera
+    table_manager = TableManager(config, camera_id, camera_name)
     
     # Testar conectividade com o dashboard
     try:
@@ -1132,11 +1179,13 @@ def main():
     cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
     
     if not cap.isOpened():
-        print("Não foi possível abrir a câmera RTSP. Verifique config.camera_url.")
+        table_manager.logger.error(f"Não foi possível abrir a câmera {camera_name} ({camera_id}). URL: {camera_url}")
         return
 
-    cv2.namedWindow('Monitor de Mesas', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Monitor de Mesas', 1920, 1080)
+    # Cria uma janela específica para esta câmera
+    window_name = f'Monitor - Camera {camera_id}'  # Nome simplificado sem caracteres especiais
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 1280, 720)
 
     last_stats_time = time.time()
     last_second_notification = time.time()
@@ -1145,13 +1194,6 @@ def main():
     
     # Estrutura para armazenar pessoas detectadas anteriormente
     previous_people = []
-    
-    # Definir teclas para controle
-    toggle_keys = {
-        'p': 'show_people_boxes',   # 'p' para ligar/desligar visualização de pessoas
-        'l': 'show_association_lines',  # 'l' para ligar/desligar linhas de associação
-        'd': 'debug_mode'  # 'd' para ligar/desligar modo debug
-    }
     
     # Contagem de classes para debug
     class_counter = defaultdict(int)
@@ -1162,10 +1204,10 @@ def main():
             ret, frame = cap.read()
             if not ret:
                 fail_count += 1
-                print("Falha ao ler frame, tentando novamente...")
+                table_manager.logger.warning(f"Falha ao ler frame da {camera_name}, tentando novamente...")
                 time.sleep(1)
                 if fail_count >= max_fail:
-                    print("Falha repetida em ler frames. Encerrando...")
+                    table_manager.logger.error(f"Falha repetida em ler frames da {camera_name}. Encerrando...")
                     break
                 continue
             fail_count = 0
@@ -1231,6 +1273,17 @@ def main():
             # Desenha interface
             table_manager.draw_interface(frame, current_time, detected_maos, detected_people)
             
+            # Adiciona identificação da câmera na imagem
+            cv2.putText(
+                frame, 
+                f"{camera_name}", 
+                (10, frame.shape[0] - 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.8, 
+                (255, 255, 255), 
+                2
+            )
+            
             # Mostrar contagem de classes em modo debug
             if config.debug_mode:
                 debug_y = 60
@@ -1241,7 +1294,7 @@ def main():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
                     debug_y += 20
             
-            cv2.imshow('Monitor de Mesas', frame)
+            cv2.imshow(window_name, frame)
 
             # Notificação de estado a cada 1s
             if (current_time - last_second_notification) >= 1:
@@ -1249,7 +1302,7 @@ def main():
                 
                 # Log das mesas no snapshot
                 if config.debug_mode:
-                    table_manager.logger.debug(f"Enviando snapshot com {len(snapshot['mesas'])} mesas:")
+                    table_manager.logger.debug(f"Enviando snapshot da {camera_name} com {len(snapshot['mesas'])} mesas:")
                     for mesa in snapshot['mesas']:
                         table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
                 
@@ -1264,7 +1317,7 @@ def main():
             if (current_time - last_stats_time) > 300:
                 stats = table_manager.get_occupancy_stats()
                 table_manager.logger.info(
-                    f"Estatísticas | Mesas: {stats['total_mesas']} | "
+                    f"Estatísticas {camera_name} | Mesas: {stats['total_mesas']} | "
                     f"Ocupadas (mesas): {stats['ocupadas']} | "
                     f"Atendimento: {stats['atendimento']} | "
                     f"Standby: {stats['standby']} | "
@@ -1284,11 +1337,111 @@ def main():
                 print(f"Alternando {attr_name} para {getattr(config, attr_name)}")
 
     except Exception as e:
-        table_manager.logger.error(f"Erro no loop principal: {str(e)}")
+        table_manager.logger.error(f"Erro no loop principal da {camera_name}: {str(e)}")
+        import traceback
+        table_manager.logger.error(traceback.format_exc())
     finally:
         cap.release()
-        cv2.destroyAllWindows()
-        table_manager.logger.info("Sistema encerrado")
+        cv2.destroyWindow(window_name)
+        table_manager.logger.info(f"Processamento da {camera_name} encerrado")
+
+
+def update_camera_ports():
+    """Solicita a porta ao usuário e atualiza todas as URLs das câmeras no config.json."""
+    last_port = get_last_used_port()
+    prompt = f"Digite a porta para todas as câmeras RTSP"
+    if last_port:
+        prompt += f" (última: {last_port}, deixe em branco para usar): "
+    else:
+        prompt += ": "
+
+    while True:
+        user_input = input(prompt).strip()
+        if not user_input:
+            if last_port:
+                selected_port = last_port
+                print(f"Usando a última porta salva: {selected_port}")
+                break
+            else:
+                print("Nenhuma porta anterior encontrada. Por favor, insira uma porta.")
+        else:
+            # Validação simples (verifica se é número)
+            if user_input.isdigit():
+                selected_port = user_input
+                break
+            else:
+                print("Entrada inválida. Por favor, insira um número de porta.")
+    
+    # Salva a porta selecionada para uso futuro
+    save_last_used_port(selected_port)
+    
+    # Atualiza o arquivo config.json
+    try:
+        # Carrega o arquivo atual
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+        
+        # Atualiza as URLs das câmeras
+        for camera in config_data['cameras']:
+            url = camera['url']
+            # Regex para encontrar @host:porta/
+            match = re.search(r"(@[^:]+):(\d+)/", url)
+            if match:
+                new_url = url[:match.start(2)] + selected_port + url[match.end(2):]
+                camera['url'] = new_url
+                print(f"URL da {camera.get('name', camera.get('id', 'Câmera'))} atualizada para: {new_url}")
+            else:
+                print(f"Formato da URL inválido para {camera.get('name', camera.get('id', 'Câmera'))}. Não foi possível atualizar.")
+        
+        # Salva as alterações
+        with open('config.json', 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=4, ensure_ascii=False)
+        
+        print("Arquivo config.json atualizado com sucesso!")
+        return selected_port
+    except Exception as e:
+        print(f"Erro ao atualizar config.json: {str(e)}")
+        return selected_port
+
+
+def main():
+    # Atualiza as portas das câmeras
+    update_camera_ports()
+    
+    # Carregar configurações do arquivo JSON (após atualização das portas)
+    config = AppConfig.load_from_json()
+    
+    # Verificar se temos câmeras configuradas
+    if not config.cameras:
+        print("ERRO: Nenhuma câmera configurada no arquivo config.json")
+        return
+    
+    # Definir teclas para controle
+    global toggle_keys
+    toggle_keys = {
+        'p': 'show_people_boxes',   # 'p' para ligar/desligar visualização de pessoas
+        'l': 'show_association_lines',  # 'l' para ligar/desligar linhas de associação
+        'd': 'debug_mode'  # 'd' para ligar/desligar modo debug
+    }
+    
+    # Criar thread para cada câmera
+    threads = []
+    for camera_config in config.cameras:
+        thread = threading.Thread(
+            target=process_camera,
+            args=(camera_config, config),
+            daemon=True
+        )
+        threads.append(thread)
+        thread.start()
+        # Pequeno delay para não iniciar todas as câmeras simultaneamente
+        time.sleep(1)
+    
+    # Aguardar todas as threads
+    for thread in threads:
+        thread.join()
+
+    print("Sistema encerrado")
 
 
 if __name__ == "__main__":

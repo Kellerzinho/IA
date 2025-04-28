@@ -6,6 +6,11 @@
             "name": "Câmera 3"
         },
         {
+            "id": "camera5",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:8677/cam/realmonitor?channel=5&subtype=0",
+            "name": "Câmera 5"
+        },
+        {
             "id": "camera6",
             "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:8677/cam/realmonitor?channel=6&subtype=0",
             "name": "Câmera 6"

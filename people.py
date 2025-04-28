@@ -428,14 +428,19 @@ class TableManager:
             # Extrair apenas o número da câmera
             camera_num = self._extract_camera_number(self.camera_id)
             
-            # Enviar para o dashboard
-            msg_dashboard = {
+            # Estrutura da câmera
+            camera_data = {
                 "tipo": "mesa_liberada",
                 "mesa_id": table_id,
                 "lugares": lugares,
                 "timestamp": time.time(),
-                "camera_id": camera_num,
-                "restaurante": "CSVL"
+                "camera_id": camera_num
+            }
+            
+            # Enviar para o dashboard
+            msg_dashboard = {
+                "restaurante": "CSVL",
+                "cameras": [camera_data]
             }
             self.notificar_dashboard(json.dumps(msg_dashboard))
 
@@ -548,12 +553,18 @@ class TableManager:
                         # Extrair apenas o número da câmera
                         camera_num = self._extract_camera_number(self.camera_id)
                         
-                        msg_dashboard = {
+                        # Estrutura da câmera
+                        camera_data = {
                             "tipo": "atendimento_requisitado",
                             "mesa_id": melhor_id,
                             "timestamp": current_time,
-                            "camera_id": camera_num,
-                            "restaurante": "CSVL"
+                            "camera_id": camera_num
+                        }
+                        
+                        # Estrutura de notificação
+                        msg_dashboard = {
+                            "restaurante": "CSVL",
+                            "cameras": [camera_data]
                         }
                         self.notificar_dashboard(json.dumps(msg_dashboard))
                         
@@ -780,7 +791,7 @@ class TableManager:
         if isinstance(camera_id, str) and camera_id.startswith("camera"):
             return camera_id.replace("camera", "")
         return camera_id
-        
+
     def build_current_states_snapshot(self, current_time: float) -> Dict:
         """Monta o snapshot das mesas para enviar ao dashboard."""
         # Obter estatísticas para incluir taxa de ocupação
@@ -789,11 +800,11 @@ class TableManager:
         # Extrair apenas o número da câmera
         camera_num = self._extract_camera_number(self.camera_id)
         
-        snapshot = {
+        # Cria a estrutura da câmera individual
+        camera_data = {
             "tipo": "estado_atual",
             "timestamp": current_time,
             "camera_id": camera_num,
-            "restaurante": "CSVL",
             "taxa_ocupacao": stats['taxa_ocupacao'],
             "total_lugares": stats['capacity_sum'],
             "total_pessoas": stats['occupant_sum'],
@@ -809,7 +820,7 @@ class TableManager:
                 tempo_restante = self.config.tracking_params['atendimento_timeout'] - (current_time - tdata['ultimo_atendimento'])
                 tempo_restante = max(0, tempo_restante)
         
-            snapshot["mesas"].append({
+            camera_data["mesas"].append({
                 "mesa_id": table_id,
                 "estado": estado,
                 "lugares": self.config.cls_to_lugares.get(tdata['cls'], 0),
@@ -817,6 +828,12 @@ class TableManager:
                 "precisa_atendimento": precisa_atendimento,
                 "tempo_restante_atendimento": tempo_restante,
             })
+        
+        # Estrutura final de notificação
+        snapshot = {
+            "restaurante": "CSVL",
+            "cameras": [camera_data]
+        }
     
         return snapshot
 
@@ -1305,8 +1322,8 @@ def process_camera(camera_config, config):
                 
                 # Log das mesas no snapshot
                 if config.debug_mode:
-                    table_manager.logger.debug(f"Enviando snapshot da {camera_name} com {len(snapshot['mesas'])} mesas:")
-                    for mesa in snapshot['mesas']:
+                    table_manager.logger.debug(f"Enviando snapshot da {camera_name} com {len(snapshot['cameras'][0]['mesas'])} mesas:")
+                    for mesa in snapshot['cameras'][0]['mesas']:
                         table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
                 
                 # Enviar notificação do snapshot atual

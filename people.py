@@ -14,6 +14,7 @@ import threading
 from collections import OrderedDict
 import os
 import re
+import psutil  # Para monitoramento de memória
 
 # Forçar o uso de CUDA (GPU) para processamento
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -156,6 +157,82 @@ def update_box(old_box, new_box, alpha=0.3):
     )
 
 
+# Adicione a classe LogFilter antes da classe TableManager
+class LogFilter(logging.Filter):
+    """
+    Filtro personalizado para evitar mensagens repetitivas no log.
+    Agrupa mensagens semelhantes e as registra uma vez a cada intervalo definido.
+    """
+    def __init__(self, name=""):
+        super().__init__(name)
+        # Dicionário para guardar a última vez que uma mensagem similar foi exibida
+        self.last_logged = {}
+        # Dicionário para contar quantas vezes uma mensagem foi ignorada desde o último log
+        self.suppressed_count = {}
+        # Definir tempo mínimo entre mensagens similares (em segundos)
+        self.min_interval = 30  # Aumentado para 30 segundos para reduzir ainda mais a poluição
+        # Padrões de mensagens para agrupar (regex)
+        self.patterns = [
+            # Padrão para mensagens de uso de memória
+            r'Uso de memória \(.*?\): .*?MB',
+            # Padrão para falhas ao ler frames
+            r'Falha ao ler frame da .*?, tentando novamente.*',
+            # Padrão para notificações de dashboard
+            r'\[DASHBOARD\] .*?',
+            # Padrão para snapshot
+            r'Adicionando snapshot da .*? com .*? mesas',
+            # Conexões
+            r'Reconexão bem-sucedida para .*?',
+            # Reconexão genérica
+            r'Reconexão preventiva para .*?',
+            # Estatísticas periódicas 
+            r'Estatísticas .*?\|.*?',
+            # Tentativa de reconexão
+            r'Tentativa de reconexão .*?',
+            # Reiniciando processamento
+            r'Reiniciando processamento da .*?',
+            # Notificações enviadas
+            r'Notificação enviada com sucesso'
+        ]
+
+    def filter(self, record):
+        msg = record.getMessage()
+        
+        # Verificar se a mensagem se encaixa em algum padrão para ser agrupada
+        for pattern in self.patterns:
+            if re.match(pattern, msg):
+                pattern_key = pattern  # Usa o padrão como chave
+                current_time = time.time()
+                
+                # Verifica se é hora de exibir esse tipo de mensagem
+                if (pattern_key not in self.last_logged or 
+                    current_time - self.last_logged[pattern_key] >= self.min_interval):
+                    
+                    # Se houver mensagens suprimidas, adiciona contagem
+                    if pattern_key in self.suppressed_count and self.suppressed_count[pattern_key] > 0:
+                        count = self.suppressed_count[pattern_key]
+                        # Substitui a mensagem original por um resumo que inclui a contagem
+                        if pattern == r'Uso de memória \(.*?\): .*?MB':
+                            record.msg = f"{msg} (+{count} mensagens similares suprimidas)"
+                        elif pattern == r'Falha ao ler frame da .*?, tentando novamente.*':
+                            record.msg = f"{msg} (+{count} falhas similares suprimidas)"
+                        else:
+                            record.msg = f"{msg} (+{count} mensagens similares suprimidas)"
+                    
+                    # Reinicia contador e atualiza último log
+                    self.suppressed_count[pattern_key] = 0
+                    self.last_logged[pattern_key] = current_time
+                    return True
+                else:
+                    # Incrementa contador de mensagens suprimidas
+                    if pattern_key not in self.suppressed_count:
+                        self.suppressed_count[pattern_key] = 0
+                    self.suppressed_count[pattern_key] += 1
+                    return False
+        
+        # Mensagens que não se encaixam em nenhum padrão são sempre exibidas
+        return True
+
 class TableManager:
     def __init__(self, config: AppConfig, camera_id=None, camera_name=None):
         self.config = config
@@ -179,10 +256,14 @@ class TableManager:
         self.logger.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
-        # Console handler
+        # Console handler com filtro para reduzir mensagens repetitivas
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
         ch.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1))
+        # Adiciona o filtro personalizado
+        log_filter = LogFilter()
+        ch.addFilter(log_filter)
+        ch.setLevel(logging.INFO)  # Define que apenas mensagens INFO ou mais críticas vão para o console
 
         # Arquivo único para todos os logs de dashboard
         dh = logging.FileHandler('dashboard.log', encoding='utf-8')
@@ -516,7 +597,7 @@ class TableManager:
             melhor_id = None
             menor_dist = float('inf')
             for tid, tdata in self.tables.items():
-                # Só processa mesas CHEIAs ou OCUPADAs
+                # Só processa mesas CHEIas ou OCUPADAs
                 if tdata['state'] not in ['CHEIA', 'OCUPADA']:
                     continue
                 
@@ -952,7 +1033,7 @@ class TableManager:
                     1.2,  # Fonte maior 
                     (0, 165, 255),  # Cor laranja para destaque
                     3)  # Espessura maior
-                    
+                
         # Mostrar informações adicionais em modo debug
         if self.config.debug_mode:
             debug_info = (
@@ -1238,11 +1319,24 @@ def process_camera(camera_config, config):
     model = YOLO(config.model_path)
     model.to('cuda')
     
-    # Abre stream da câmera com configurações RTSP/TCP
-    cap = cv2.VideoCapture(camera_url)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
-    cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
-    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+    # Variáveis para reconexão e monitoramento
+    reconnection_attempts = 0
+    max_reconnection_attempts = 5  # Número máximo de tentativas de reconexão
+    capture_restart_count = 0  # Contador para estatísticas
+    last_reconnection = time.time()
+    last_mem_check = time.time()  # Para monitoramento de memória
+    
+    # Função para criar e configurar uma nova captura de câmera
+    def create_camera_capture():
+        cap = cv2.VideoCapture(camera_url)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduz o buffer para minimizar atrasos
+        return cap
+    
+    # Abre stream da câmera com configurações iniciais
+    cap = create_camera_capture()
     
     if not cap.isOpened():
         table_manager.logger.error(f"Não foi possível abrir a câmera {camera_name} ({camera_id}). URL: {camera_url}")
@@ -1256,7 +1350,7 @@ def process_camera(camera_config, config):
     last_stats_time = time.time()
     last_second_notification = time.time()
     fail_count = 0
-    max_fail = 20  # Tolerância a falhas consecutivas
+    max_fail = 10  # Reduzido para 10 tentativas antes de reconectar
     
     # Estrutura para armazenar pessoas detectadas anteriormente
     previous_people = []
@@ -1267,18 +1361,76 @@ def process_camera(camera_config, config):
 
     try:
         while True:
+            current_time = time.time()
+            
+            # Monitoramento de memória a cada minuto
+            if current_time - last_mem_check > 60:
+                proc = psutil.Process()
+                mem_info = proc.memory_info()
+                table_manager.logger.info(f"Uso de memória ({camera_name}): {mem_info.rss / 1024 / 1024:.1f} MB")
+                last_mem_check = current_time
+            
             ret, frame = cap.read()
             if not ret:
                 fail_count += 1
-                table_manager.logger.warning(f"Falha ao ler frame da {camera_name}, tentando novamente...")
+                table_manager.logger.warning(f"Falha ao ler frame da {camera_name}, tentando novamente... ({fail_count}/{max_fail})")
                 time.sleep(1)
+                
                 if fail_count >= max_fail:
-                    table_manager.logger.error(f"Falha repetida em ler frames da {camera_name}. Encerrando...")
-                    break
+                    table_manager.logger.error(f"Falhas repetidas na {camera_name}. Tentando reconexão robusta...")
+                    capture_restart_count += 1
+                    
+                    # Libera completamente os recursos
+                    cap.release()
+                    cv2.destroyWindow(window_name)  # Fecha a janela para liberar recursos
+                    time.sleep(3)  # Espera maior para liberar recursos de rede
+                    
+                    # Recria a janela
+                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(window_name, 1280, 720)
+                    
+                    # Tenta diferentes configurações de reconexão
+                    reconnect_success = False
+                    for attempt in range(2):  # Reduzido para 2 tentativas
+                        try:
+                            table_manager.logger.info(f"Tentativa de reconexão {attempt+1}/2 para {camera_name}")
+                            
+                            # Cria um novo objeto VideoCapture com diferentes configurações
+                            if attempt == 0:
+                                # Primeira tentativa: configuração padrão
+                                cap = cv2.VideoCapture(camera_url)
+                                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            else:
+                                # Segunda tentativa: timeout maior
+                                cap = cv2.VideoCapture(camera_url)
+                                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)  # 10 segundos
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            
+                            # Testa a conexão
+                            test_ret = cap.grab()
+                            if test_ret:
+                                table_manager.logger.info(f"Reconexão bem-sucedida para {camera_name} (tentativa {attempt+1})")
+                                reconnect_success = True
+                                break
+                            else:
+                                cap.release()
+                                time.sleep(2)
+                        except Exception as e:
+                            table_manager.logger.error(f"Erro na tentativa {attempt+1} de reconexão: {str(e)}")
+                            time.sleep(2)
+                    
+                    if not reconnect_success:
+                        table_manager.logger.error(f"Todas as tentativas de reconexão falharam para {camera_name}. Tentando novamente em 30 segundos...")
+                        time.sleep(30)
+                        cap = create_camera_capture()
+                    
+                    table_manager.logger.info(f"Reiniciando processamento da {camera_name} (reinício #{capture_restart_count})")
+                    fail_count = 0
+                    last_reconnection = time.time()
+                    continue
                 continue
             fail_count = 0
-
-            current_time = time.time()
 
             # Zera contador de classes a cada 5 segundos
             if current_time - last_counter_reset > 5:
@@ -1416,7 +1568,7 @@ def update_camera_ports():
     last_port = get_last_used_port()
     prompt = f"Digite a porta para todas as câmeras RTSP"
     if last_port:
-        prompt += f" (última: {last_port}, deixe em branco para usar): "
+        prompt += f" (última: {last_port}, aperte Enter para usar): "
     else:
         prompt += ": "
 

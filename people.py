@@ -829,13 +829,7 @@ class TableManager:
                 "tempo_restante_atendimento": tempo_restante,
             })
         
-        # Estrutura final de notificação
-        snapshot = {
-            "restaurante": "CSVL",
-            "cameras": [camera_data]
-        }
-    
-        return snapshot
+        return camera_data
 
     # -------------------------------------------------------
     #   DESENHO NA TELA
@@ -969,6 +963,58 @@ class TableManager:
             )
             cv2.putText(frame, debug_info, (10, frame.shape[0] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+# Variável global para armazenar snapshots das câmeras
+global_camera_snapshots = {}
+global_snapshot_lock = threading.Lock()
+
+def add_camera_snapshot(camera_id, snapshot_data):
+    """Adiciona o snapshot de uma câmera ao armazenamento global."""
+    with global_snapshot_lock:
+        global_camera_snapshots[camera_id] = snapshot_data
+
+def get_all_camera_snapshots():
+    """Retorna uma cópia de todos os snapshots de câmeras."""
+    with global_snapshot_lock:
+        return global_camera_snapshots.copy()
+
+def send_combined_snapshots():
+    """Envia um único snapshot combinado com todas as câmeras."""
+    with global_snapshot_lock:
+        if not global_camera_snapshots:
+            return  # Nada para enviar
+            
+        # Cria a estrutura consolidada
+        combined_snapshot = {
+            "restaurante": "CSVL",
+            "cameras": list(global_camera_snapshots.values())
+        }
+        
+        # Envia a notificação combinada
+        combined_json = json.dumps(combined_snapshot)
+        
+        try:
+            # Obter configuração do dashboard
+            config = AppConfig.load_from_json()
+            headers = {'Content-Type': 'application/json'}
+            
+            # Log para debug
+            print(f"[DASHBOARD] Enviando snapshot combinado com {len(global_camera_snapshots)} câmeras")
+            
+            # Usa o método PUT para enviar as notificações
+            resp = requests.put(
+                config.dashboard_url,
+                data=combined_json,
+                headers=headers,
+                timeout=3
+            )
+            
+            if resp.status_code == 200:
+                print(f"[DASHBOARD] Notificação combinada enviada com sucesso")
+            else:
+                print(f"[DASHBOARD] Falha ao enviar notificação combinada: {resp.status_code}")
+        except Exception as e:
+            print(f"[DASHBOARD] Erro ao enviar notificação combinada: {str(e)}")
 
 def get_last_used_port():
     """Lê a última porta usada do arquivo."""
@@ -1318,17 +1364,16 @@ def process_camera(camera_config, config):
 
             # Notificação de estado a cada 1s
             if (current_time - last_second_notification) >= 1:
-                snapshot = table_manager.build_current_states_snapshot(current_time)
+                camera_data = table_manager.build_current_states_snapshot(current_time)
                 
                 # Log das mesas no snapshot
                 if config.debug_mode:
-                    table_manager.logger.debug(f"Enviando snapshot da {camera_name} com {len(snapshot['cameras'][0]['mesas'])} mesas:")
-                    for mesa in snapshot['cameras'][0]['mesas']:
+                    table_manager.logger.debug(f"Adicionando snapshot da {camera_name} com {len(camera_data['mesas'])} mesas:")
+                    for mesa in camera_data['mesas']:
                         table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
                 
-                # Enviar notificação do snapshot atual
-                snapshot_json = json.dumps(snapshot)
-                table_manager.notificar_dashboard(snapshot_json)
+                # Adiciona o snapshot desta câmera ao armazenamento global
+                add_camera_snapshot(camera_data['camera_id'], camera_data)
                 
                 # Registra timestamp da última notificação enviada
                 last_second_notification = current_time
@@ -1443,6 +1488,15 @@ def main():
         'l': 'show_association_lines',  # 'l' para ligar/desligar linhas de associação
         'd': 'debug_mode'  # 'd' para ligar/desligar modo debug
     }
+    
+    # Iniciar thread para envio combinado de snapshots
+    def snapshot_sender():
+        while True:
+            send_combined_snapshots()
+            time.sleep(1)  # Envia atualizações combinadas a cada 1 segundo
+    
+    snapshot_thread = threading.Thread(target=snapshot_sender, daemon=True)
+    snapshot_thread.start()
     
     # Criar thread para cada câmera
     threads = []

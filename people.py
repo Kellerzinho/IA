@@ -66,7 +66,6 @@ class AppConfig:
     show_people_boxes: bool = True
     show_association_lines: bool = True
     debug_mode: bool = False
-    silent_mode: bool = False  # Quando True, suprime mensagens de debug no console
     
     # Nomes das classes
     cls_names: Dict[int, str] = field(default_factory=lambda: {
@@ -158,90 +157,6 @@ def update_box(old_box, new_box, alpha=0.3):
     )
 
 
-# Adicione a classe LogFilter antes da classe TableManager
-class LogFilter(logging.Filter):
-    """
-    Filtro personalizado para evitar mensagens repetitivas no log.
-    Agrupa mensagens semelhantes e as registra uma vez a cada intervalo definido.
-    """
-    def __init__(self, name=""):
-        super().__init__(name)
-        # Dicionário para guardar a última vez que uma mensagem similar foi exibida
-        self.last_logged = {}
-        # Dicionário para contar quantas vezes uma mensagem foi ignorada desde o último log
-        self.suppressed_count = {}
-        # Definir tempo mínimo entre mensagens similares (em segundos)
-        self.min_interval = 30  # Para a maioria das mensagens
-        
-        # Padrões de mensagens para agrupar (regex) com intervalo personalizado em segundos
-        self.patterns_with_intervals = [
-            # Padrões de debug com intervalo muito curto (1 segundo)
-            (r'Distância para Mesa \d+: .*? pixels', 1),
-            (r'ASSOCIADA à Mesa \d+.*?', 1),
-            (r'Processando pessoa: centro=.*?', 1),
-            (r'Estado mantido Mesa \d+:.*?', 1),
-            (r'Aguardando delay Mesa \d+:.*?', 1),
-            (r'Mesa \d+: Mudança de ocupação.*?', 1),
-            
-            # Padrões normais com intervalo maior (30 segundos)
-            (r'Uso de memória \(.*?\): .*?MB', 30),
-            (r'Falha ao ler frame da .*?, tentando novamente.*', 30),
-            (r'\[DASHBOARD\] .*?', 30),
-            (r'Adicionando snapshot da .*? com .*? mesas', 30),
-            (r'Reconexão bem-sucedida para .*?', 30),
-            (r'Reconexão preventiva para .*?', 30),
-            (r'Estatísticas .*?\|.*?', 30),
-            (r'Tentativa de reconexão .*?', 30),
-            (r'Reiniciando processamento da .*?', 30),
-            (r'Notificação enviada com sucesso', 30),
-            (r'MUDANÇA ESTADO Mesa \d+:.*?', 5),
-            (r'LIBEROU \d+ LUGARES - Mesa \d+', 5),
-            (r'ATENDIMENTO: Mesa \d+', 5),
-            (r'Atendimento da Mesa \d+ expirado', 5),
-        ]
-
-    def filter(self, record):
-        msg = record.getMessage()
-        current_time = time.time()
-        
-        # Verificar se a mensagem se encaixa em algum padrão para ser agrupada
-        for pattern, interval in self.patterns_with_intervals:
-            if re.match(pattern, msg):
-                pattern_key = pattern  # Usa o padrão como chave
-                
-                # Verifica se é hora de exibir esse tipo de mensagem
-                if (pattern_key not in self.last_logged or 
-                    current_time - self.last_logged[pattern_key] >= interval):
-                    
-                    # Se houver mensagens suprimidas, adiciona contagem
-                    if pattern_key in self.suppressed_count and self.suppressed_count[pattern_key] > 0:
-                        count = self.suppressed_count[pattern_key]
-                        
-                        # Para mensagens frequentes de debug (com intervalo curto), não adicionamos "+X mensagens"
-                        if interval <= 1 and count > 10:
-                            # Para mensagens muito frequentes, simplesmente não mostramos
-                            self.suppressed_count[pattern_key] = 0
-                            self.last_logged[pattern_key] = current_time
-                            return False
-                        
-                        # Para outros tipos de mensagem, mostramos com a contagem de suprimidas
-                        suffix = f" (+{count} mensagens similares suprimidas)"
-                        record.msg = f"{msg}{suffix}"
-                    
-                    # Reinicia contador e atualiza último log
-                    self.suppressed_count[pattern_key] = 0
-                    self.last_logged[pattern_key] = current_time
-                    return True
-                else:
-                    # Incrementa contador de mensagens suprimidas
-                    if pattern_key not in self.suppressed_count:
-                        self.suppressed_count[pattern_key] = 0
-                    self.suppressed_count[pattern_key] += 1
-                    return False
-        
-        # Mensagens que não se encaixam em nenhum padrão são sempre exibidas
-        return True
-
 class TableManager:
     def __init__(self, config: AppConfig, camera_id=None, camera_name=None):
         self.config = config
@@ -265,19 +180,12 @@ class TableManager:
         self.logger.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
-        # Console handler com filtro para reduzir mensagens repetitivas
+        # Console handler sem filtro
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
         ch.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1))
-        # Adiciona o filtro personalizado
-        log_filter = LogFilter()
-        ch.addFilter(log_filter)
-        
-        # Define o nível do logger do console com base nas configurações
-        if self.config.silent_mode:
-            ch.setLevel(logging.WARNING)  # Em modo silencioso, mostra apenas warnings e erros
-        else:
-            ch.setLevel(logging.INFO)  # Modo normal
+        # Remover o uso do filtro personalizado
+        ch.setLevel(logging.INFO)  # Define que apenas mensagens INFO ou mais críticas vão para o console
 
         # Arquivo único para todos os logs de dashboard
         dh = logging.FileHandler('dashboard.log', encoding='utf-8')
@@ -742,9 +650,9 @@ class TableManager:
             melhor_id = None
             menor_dist = float('inf')
             
-            if self.config.debug_mode:
-                self.logger.info(f"Processando pessoa: centro=({(p_coords[0] + p_coords[2])/2:.1f}, {(p_coords[1] + p_coords[3])/2:.1f})")
-                
+            # Removendo logs de debug de processamento de pessoa
+            # Esses logs são muito frequentes e poluem o console
+            
             for tid, tdata in self.tables.items():
                 # Se mesa está em STANDBY, ignore
                 if tdata['state'] == 'STANDBY':
@@ -752,8 +660,8 @@ class TableManager:
                     
                 d = dist_person_table(p_coords, tdata['coords'])
                 
-                if self.config.debug_mode:
-                    self.logger.info(f"  Distância para Mesa {tid}: {d:.1f} pixels")
+                # Removendo logs de distância para cada mesa
+                # Esses logs são muito frequentes e poluem o console
                     
                 if d < menor_dist:
                     menor_dist = d
@@ -766,8 +674,8 @@ class TableManager:
                 self.tables[melhor_id]['occupant_count'] += 1
                 person_table_associations.append((p_coords, self.tables[melhor_id]['coords'], melhor_id))
                 
-                if self.config.debug_mode:
-                    self.logger.info(f"  ASSOCIADA à Mesa {melhor_id} (distância: {menor_dist:.1f}px)")
+                # Removendo logs de associação de pessoa à mesa
+                # Esses logs são muito frequentes e poluem o console
                 
                 # Garante que a mesa tenha as propriedades necessárias
                 # Inicializa o campo last_occupancy_change se ainda não existir
@@ -812,9 +720,8 @@ class TableManager:
                 tdata['last_occupancy_change'] = current_time
                 tdata['pending_occupancy'] = target_state
                     
-                # Registra no log a mudança de ocupação
-                if self.config.debug_mode:
-                    self.logger.info(f"Mesa {tid}: Mudança de ocupação {previous_count} -> {current_count} (alvo: {target_state})")
+                # Removendo logs frequentes de mudança de ocupação
+                # São muito frequentes e poluem o console
             
             # Se está em atendimento, não muda o estado
             if tdata['precisa_atendimento']:
@@ -831,19 +738,17 @@ class TableManager:
                     
                     # Atualiza o estado se for diferente do atual
                     if new_state != old_state:
+                        # Mantemos este log pois é importante registrar mudanças de estado
                         if self.config.debug_mode:
-                            self.logger.info(f"MUDANÇA ESTADO Mesa {tid}: {old_state} -> {new_state} (delay={time_since_change:.1f}s, ocupantes={current_count}/{lugares})")
+                            self.logger.info(f"MUDANÇA ESTADO Mesa {tid}: {old_state} -> {new_state} (ocupantes={current_count}/{lugares})")
                         
                         tdata['state'] = new_state
                         self._log_state_change(tid, old_state, new_state)
-                    else:
-                        if self.config.debug_mode:
-                            self.logger.info(f"Estado mantido Mesa {tid}: {old_state} (ocupantes={current_count}/{lugares})")
+                    # Removendo logs de estado mantido (muito frequentes)
                     
                     # Não reinicia o estado pendente para permitir que atualizações futuras ocorram mais rapidamente
                     # quando a situação atual já tiver sido confirmada
-                elif self.config.debug_mode and time_since_change > 0:
-                    self.logger.info(f"Aguardando delay Mesa {tid}: pendente={tdata['pending_occupancy']}, atual={old_state}, tempo={time_since_change:.1f}/{state_change_delay}s")
+                # Removendo logs de aguardando delay (muito frequentes)
 
     # -------------------------------------------------------
     #   STATÍSTICAS
@@ -971,6 +876,93 @@ class TableManager:
                 mesa_cls_name = self.config.cls_names.get(mesa_cls, f"Cls {mesa_cls}")
                 cv2.putText(frame, mesa_cls_name, (x1+5, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # Desenhar pessoas detectadas (se habilitado)
+        if self.config.show_people_boxes:
+            for p_cls, p_coords in detected_people:
+                x1, y1, x2, y2 = p_coords
+                color = self.config.colors['PESSOA']
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Texto básico ou detalhado dependendo do modo
+                if self.config.debug_mode:
+                    pessoa_cls_name = self.config.cls_names.get(p_cls, f"Cls {p_cls}")
+                    cv2.putText(frame, f"{pessoa_cls_name} ({p_cls})", (x1, y1-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                else:
+                    cv2.putText(frame, "PESSOA", (x1, y1-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        # Desenhar linhas de associação entre pessoas e mesas (se habilitado)
+        if self.config.show_association_lines and hasattr(self, 'person_table_associations'):
+            for person_box, table_box, table_id in self.person_table_associations:
+                # Usa a parte inferior central da pessoa (pés)
+                px = (person_box[0] + person_box[2]) // 2  # x central
+                py = person_box[3]  # y mais baixo (pés da pessoa)
+                
+                # Centro da mesa permanece o mesmo
+                tx = (table_box[0] + table_box[2]) // 2
+                ty = (table_box[1] + table_box[3]) // 2
+                
+                # Desenha a linha de associação
+                cv2.line(frame, (px, py), (tx, ty), (0, 255, 255), 1)
+
+        # Desenhar mãos detectadas
+        for mao_cls, mao_coords in detected_maos:
+            x1, y1, x2, y2 = mao_coords
+            color = self.config.colors['MAO']
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            if self.config.debug_mode:
+                mao_cls_name = self.config.cls_names.get(mao_cls, f"Cls {mao_cls}")
+                cv2.putText(frame, f"{mao_cls_name} ({mao_cls})", (x1, y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            else:
+                cv2.putText(frame, "MAO", (x1, y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        # Mostra estatísticas
+        stats = self.get_occupancy_stats()
+        
+        # Versão simplificada do status - sem mesas em standby e atendimento
+        stxt = (
+            f"Mesas: {stats['total_mesas'] - stats['standby']} | "
+            f"Ocupadas: {stats['ocupadas']} | "
+            f"Pessoas: {stats['occupant_sum']}/{stats['capacity_sum']}"
+        )
+        cv2.putText(frame, stxt, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        # Destaque para a taxa de ocupação
+        taxa_txt = f"Taxa: {stats['taxa_ocupacao']:.0%}"
+        tx_width = cv2.getTextSize(taxa_txt, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0][0]
+        
+        # Desenha um fundo para destacar a taxa
+        cv2.rectangle(frame, 
+                        (frame.shape[1] - tx_width - 20, 10), 
+                        (frame.shape[1] - 10, 50), 
+                        (0, 0, 60), 
+                        -1)  # -1 para preencher o retângulo
+        
+        # Desenha a taxa com tamanho maior e em destaque
+        cv2.putText(frame, 
+                    taxa_txt, 
+                    (frame.shape[1] - tx_width - 15, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 
+                    1.2,  # Fonte maior 
+                    (0, 165, 255),  # Cor laranja para destaque
+                    3)  # Espessura maior
+                
+        # Mostrar informações adicionais em modo debug
+        if self.config.debug_mode:
+            debug_info = (
+                f"Modo: BOUNDING BOX | "
+                f"Pessoas detectadas: {len(detected_people)} | "
+                f"Maos detectadas: {len(detected_maos)} | "
+                f"Modelo: {self.config.model_path}"
+            )
+            cv2.putText(frame, debug_info, (10, frame.shape[0] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
 # Variável global para armazenar snapshots das câmeras
 global_camera_snapshots = {}
@@ -1280,7 +1272,7 @@ def process_camera(camera_config, config):
     max_fail = 10  # Reduzido para 10 tentativas antes de reconectar
     
     # Estrutura para armazenar pessoas detectadas anteriormente
-    previous_people = []  # Lista de tuplas (cls, coords)
+    previous_people = []
     
     # Contagem de classes para debug
     class_counter = defaultdict(int)
@@ -1300,7 +1292,9 @@ def process_camera(camera_config, config):
             ret, frame = cap.read()
             if not ret:
                 fail_count += 1
-                table_manager.logger.warning(f"Falha ao ler frame da {camera_name}, tentando novamente... ({fail_count}/{max_fail})")
+                # Reduzimos a frequência deste log para não poluir o console
+                if fail_count == 1 or fail_count % 3 == 0:  # Mostrar apenas a primeira falha e depois a cada 3
+                    table_manager.logger.warning(f"Falha ao ler frame da {camera_name} ({fail_count}/{max_fail})")
                 time.sleep(1)
                 
                 if fail_count >= max_fail:
@@ -1445,11 +1439,12 @@ def process_camera(camera_config, config):
             if (current_time - last_second_notification) >= 1:
                 camera_data = table_manager.build_current_states_snapshot(current_time)
                 
+                # Removendo logs de debug de snapshot que são muito frequentes
                 # Log das mesas no snapshot
-                if config.debug_mode:
-                    table_manager.logger.debug(f"Adicionando snapshot da {camera_name} com {len(camera_data['mesas'])} mesas:")
-                    for mesa in camera_data['mesas']:
-                        table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
+                # if config.debug_mode:
+                #     table_manager.logger.debug(f"Adicionando snapshot da {camera_name} com {len(camera_data['mesas'])} mesas:")
+                #     for mesa in camera_data['mesas']:
+                #         table_manager.logger.debug(f"  Mesa {mesa['mesa_id']}: estado={mesa['estado']}, ocupantes={mesa['occupant_count']}/{mesa['lugares']}")
                 
                 # Adiciona o snapshot desta câmera ao armazenamento global
                 add_camera_snapshot(camera_data['camera_id'], camera_data)
@@ -1479,18 +1474,6 @@ def process_camera(camera_config, config):
                 attr_name = toggle_keys[chr(key)]
                 setattr(config, attr_name, not getattr(config, attr_name))
                 print(f"Alternando {attr_name} para {getattr(config, attr_name)}")
-                
-                # Se for o modo silencioso, reconfigura o logger
-                if attr_name == 'silent_mode':
-                    # Encontra o handler do console e ajusta o nível
-                    for handler in table_manager.logger.handlers:
-                        if isinstance(handler, logging.StreamHandler):
-                            if config.silent_mode:
-                                handler.setLevel(logging.WARNING)
-                                print("Modo silencioso ATIVADO: apenas mensagens importantes serão exibidas")
-                            else:
-                                handler.setLevel(logging.INFO)
-                                print("Modo silencioso DESATIVADO: todas as mensagens serão exibidas")
 
     except Exception as e:
         table_manager.logger.error(f"Erro no loop principal da {camera_name}: {str(e)}")
@@ -1577,8 +1560,7 @@ def main():
     toggle_keys = {
         'p': 'show_people_boxes',   # 'p' para ligar/desligar visualização de pessoas
         'l': 'show_association_lines',  # 'l' para ligar/desligar linhas de associação
-        'd': 'debug_mode',  # 'd' para ligar/desligar modo debug
-        's': 'silent_mode'  # 's' para ligar/desligar modo silencioso
+        'd': 'debug_mode'  # 'd' para ligar/desligar modo debug
     }
     
     # Iniciar thread para envio combinado de snapshots

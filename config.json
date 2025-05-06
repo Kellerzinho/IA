@@ -52,7 +52,7 @@
     "detection": {
         "show_people_boxes": true,
         "show_association_lines": true,
-        "debug_mode": true
+        "debug_mode": false
     },
     "tracking_params": {
         "alpha": 0.4,

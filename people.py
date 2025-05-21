@@ -34,6 +34,55 @@ print(f"Memória GPU total: {torch.cuda.get_device_properties(0).total_memory / 
 # Constante para o arquivo que guarda a última porta
 LAST_PORT_FILE = 'last_used_port.txt'
 
+# Adicionar após as importações e variáveis globais iniciais, antes da classe AppConfig
+# Dicionário global para controle de IDs únicos por câmera
+global_table_ids = {}
+global_ids_lock = threading.Lock()
+global_next_id = 1
+
+def get_unique_table_id(camera_id):
+    """
+    Gera um ID único para uma mesa baseado na câmera.
+    Mantém IDs diferentes entre câmeras usando um dicionário global.
+    """
+    global global_next_id
+    with global_ids_lock:
+        # Garantir que camera_id é uma string
+        camera_id = str(camera_id)
+        
+        # Inicializar o contador para esta câmera se não existir
+        if camera_id not in global_table_ids:
+            global_table_ids[camera_id] = []
+        
+        # Encontrar próximo ID único
+        new_id = global_next_id
+        global_next_id += 1
+        
+        # Registrar o ID para esta câmera
+        global_table_ids[camera_id].append(new_id)
+        
+        return new_id
+
+def get_camera_table_ids(camera_id):
+    """
+    Retorna a lista de IDs de mesas atribuídos a uma câmera específica.
+    """
+    with global_ids_lock:
+        camera_id = str(camera_id)
+        return global_table_ids.get(camera_id, []).copy()
+
+def print_table_id_distribution():
+    """
+    Imprime a distribuição atual de IDs de mesas por câmera.
+    Útil para depuração.
+    """
+    with global_ids_lock:
+        print("\n=== Distribuição de IDs de Mesas por Câmera ===")
+        for camera_id, ids in sorted(global_table_ids.items()):
+            print(f"Câmera {camera_id}: {len(ids)} mesas - IDs: {sorted(ids)}")
+        print(f"Próximo ID global: {global_next_id}")
+        print("==================================================\n")
+
 @dataclass
 class AppConfig:
     cls_to_lugares: Dict[int, int] = field(default_factory=dict)
@@ -263,7 +312,10 @@ class TableManager:
     
         self.tables = {}
         for i, (cls, coords) in enumerate(filtered_boxes, start=1):
-            self.tables[i] = {
+            # Obter ID único para esta mesa baseado na câmera
+            unique_id = get_unique_table_id(self.camera_id)
+            
+            self.tables[unique_id] = {
                 'cls': cls,
                 'coords': coords,
                 'last_seen': current_time,
@@ -281,7 +333,7 @@ class TableManager:
             self.next_creation_index += 1
             
             if self.config.debug_mode:
-                self.logger.info(f"Mesa {i} criada: tipo={cls} ({self.config.cls_names.get(cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(cls, 0)}")
+                self.logger.info(f"Mesa {unique_id} criada: tipo={cls} ({self.config.cls_names.get(cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(cls, 0)}")
         
         self.mesas_notificadas.clear()
 
@@ -372,7 +424,9 @@ class TableManager:
             )
             # Se não está perto de nenhuma mesa e já passou confirm_time
             if not too_close and (current_time - detected_time >= self.config.tracking_params['confirm_time']):
-                new_id = max([*self.tables.keys(), *updated_tables.keys()], default=0) + 1
+                # Gerar ID único para esta nova mesa
+                new_id = get_unique_table_id(self.camera_id)
+                
                 updated_tables[new_id] = {
                     'cls': det_cls,
                     'coords': det_coords,
@@ -461,23 +515,50 @@ class TableManager:
         return OrderedDict(sorted_items)
 
     def _cleanup_standby_tables(self):
-        """Remove mesas STANDBY cujo ID seja maior que o maior ID ativo, e reordena."""
+        """
+        Remove mesas STANDBY nas seguintes condições:
+        1. Cujo ID seja maior que o maior ID ativo (lógica original)
+        2. Limita o número total de mesas em STANDBY para evitar acúmulo
+        """
         active_tables = [tid for tid, tdata in self.tables.items() 
                          if tdata['state'] != 'STANDBY']
         
         if not active_tables:
             return
         
+        # 1. Remover por ID maior (lógica original)
         max_active_id = max(active_tables)
-        to_remove = [
+        to_remove_by_id = [
             tid for tid, tdata in self.tables.items()
             if tdata['state'] == 'STANDBY' and tid > max_active_id
         ]
         
-        for tid in to_remove:
+        for tid in to_remove_by_id:
             del self.tables[tid]
             self.logger.info(f"Removida mesa STANDBY {tid} (ID > {max_active_id})")
-
+        
+        # 2. Limitar o número máximo de mesas em STANDBY
+        standby_tables = [tid for tid, tdata in self.tables.items() 
+                          if tdata['state'] == 'STANDBY']
+        
+        # Número máximo permitido de mesas em STANDBY
+        max_standby_tables = 3
+        
+        # Se temos mais mesas em STANDBY do que o limite, remover as mais antigas
+        if len(standby_tables) > max_standby_tables:
+            # Ordenar por creation_index (as mais antigas primeiro)
+            sorted_standby = sorted(
+                [(tid, self.tables[tid]['creation_index']) for tid in standby_tables],
+                key=lambda x: x[1]
+            )
+            
+            # Manter apenas as max_standby_tables mais recentes
+            to_remove_by_limit = [tid for tid, _ in sorted_standby[:-max_standby_tables]]
+            
+            for tid in to_remove_by_limit:
+                del self.tables[tid]
+                self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido)")
+        
         # Reordenar após a remoção:
         self.tables = self._sort_tables_by_creation(self.tables)
 
@@ -1113,6 +1194,51 @@ def calculate_iou(box1, box2):
     return intersection / union
 
 
+def aplicar_mascara_regiao(frame, camera_id):
+    """
+    Aplica mascaramento (retângulos pretos) em regiões específicas da imagem
+    para as câmeras 8, 9 e 11.
+    
+    Args:
+        frame: Imagem a ser processada (formato OpenCV)
+        camera_id: ID da câmera (para escolher máscara apropriada)
+    
+    Returns:
+        frame: Imagem com regiões mascaradas
+    """
+    # Região para câmera 8 (mesmas máscaras da câmera 9)
+    if camera_id == '8':
+        # Região direita superior da imagem
+        cv2.rectangle(frame, (int(frame.shape[1]*0.7), 0), 
+                     (frame.shape[1], frame.shape[0]), 
+                     (0, 0, 0), -1)
+        
+    # Região para câmera 9
+    elif camera_id == '9':
+        # Região direita superior da imagem
+        cv2.rectangle(frame, (int(frame.shape[1]*0.5), 0), 
+                     (frame.shape[1], frame.shape[0]), 
+                     (0, 0, 0), -1)
+        
+        # Região superior esquerda
+        cv2.rectangle(frame, (int(frame.shape[1]*0.25), 0), 
+                     (int(frame.shape[1]), int(frame.shape[0]*0.5)), 
+                     (0, 0, 0), -1)
+    
+    # Região para câmera 11
+    elif camera_id == '11':
+        # Lado esquerdo da imagem
+        cv2.rectangle(frame, (0, 0), 
+                     (int(frame.shape[1]*0.2), frame.shape[0]), 
+                     (0, 0, 0), -1)
+        
+        cv2.rectangle(frame, (0, int(frame.shape[1]*0.8)), 
+                     (int(frame.shape[1]), int(frame.shape[0])), 
+                     (0, 0, 0), -1)
+    
+    return frame
+
+
 def process_people_detections(detected_people_raw, previous_people):
     """
     Processa detecções de pessoas para:
@@ -1224,6 +1350,14 @@ def process_camera(camera_config, config):
     
     print(f"Iniciando processamento da {camera_name} ({camera_id})")
     
+    # Validar camera_id antes de usar
+    if camera_id is None or camera_id == '':
+        camera_id = f"camera_{id(camera_config)}"  # Gera ID baseado no hash do objeto se não existir
+        print(f"AVISO: ID da câmera não definido, usando ID gerado: {camera_id}")
+    
+    # Informações de log sobre IDs únicos
+    print(f"Camera {camera_id}: sistema utilizando IDs de mesa únicos globais")
+    
     # Criar gerenciador de mesas específico para esta câmera
     table_manager = TableManager(config, camera_id, camera_name)
     
@@ -1295,6 +1429,16 @@ def process_camera(camera_config, config):
                 last_mem_check = current_time
             
             ret, frame = cap.read()
+            if ret:
+                # Extrai apenas o número da câmera para aplicar a máscara correta
+                camera_numero = camera_id
+                if isinstance(camera_id, str) and camera_id.startswith("camera"):
+                    camera_numero = camera_id.replace("camera", "")
+                
+                # Aplica máscara em regiões específicas para câmeras 8, 9 e 11
+                if camera_numero in ['8', '9', '11']:
+                    frame = aplicar_mascara_regiao(frame, camera_numero)
+                    
             if not ret:
                 fail_count += 1
                 # Reduzimos a frequência deste log para não poluir o console
@@ -1576,6 +1720,15 @@ def main():
     
     snapshot_thread = threading.Thread(target=snapshot_sender, daemon=True)
     snapshot_thread.start()
+    
+    # Thread para monitorar a distribuição de IDs
+    def id_distribution_monitor():
+        while True:
+            print_table_id_distribution()
+            time.sleep(60)  # Mostra distribuição a cada 60 segundos
+    
+    id_monitor_thread = threading.Thread(target=id_distribution_monitor, daemon=True)
+    id_monitor_thread.start()
     
     # Criar thread para cada câmera
     threads = []

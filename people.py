@@ -813,6 +813,11 @@ class TableManager:
     
         for table_id, tdata in sorted(self.tables.items(), key=lambda x: x[1]['creation_index']):
             estado = tdata['state']
+            
+            # Pula mesas em estado STANDBY
+            if estado == 'STANDBY':
+                continue
+                
             precisa_atendimento = tdata.get('precisa_atendimento', False)
         
             tempo_restante = None

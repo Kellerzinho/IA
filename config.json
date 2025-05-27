@@ -42,7 +42,7 @@
         "comment": "URL do dashboard para envio de notificações."
     },
     "model": {
-        "path": "peoplev2.pt",
+        "path": "peoplev3.pt",
         "conf": 0.2,
         "mao_conf": 0.7,
         "pessoa_conf": 0.15,

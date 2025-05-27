@@ -588,9 +588,8 @@ class TableManager:
     def _cleanup_standby_tables(self):
         """
         Remove mesas STANDBY nas seguintes condições:
-        1. Cujo ID seja maior que o maior ID ativo (lógica original)
-        2. Que não foram vistas há muito tempo (mas protege as que estão entre mesas ativas)
-        3. Limita o número total de mesas em STANDBY para evitar acúmulo
+        1. Que não foram vistas há muito tempo (mas protege as que estão entre mesas ativas)
+        2. Limita o número total de mesas em STANDBY para evitar acúmulo
         """
         current_time = time.time()
         standby_timeout = self.config.tracking_params.get('standby_timeout', 300)  # 5 minutos
@@ -601,19 +600,7 @@ class TableManager:
         if not active_tables:
             return
         
-        # 1. Remover por ID maior (lógica original)
-        max_active_id = max(active_tables)
-        to_remove_by_id = [
-            tid for tid, tdata in self.tables.items()
-            if tdata['state'] == 'STANDBY' and tid > max_active_id
-        ]
-        
-        for tid in to_remove_by_id:
-            del self.tables[tid]
-            if self.config.debug_mode:
-                self.logger.info(f"Removida mesa STANDBY {tid} (ID > {max_active_id})")
-        
-        # 2. Remover STANDBY muito antigas (mas proteger as que estão entre mesas ativas)
+        # 1. Remover STANDBY muito antigas (mas proteger as que estão entre mesas ativas)
         # Obter creation_index das mesas ativas para determinar "gaps"
         active_creation_indices = [self.tables[tid]['creation_index'] for tid in active_tables]
         min_active_index = min(active_creation_indices)
@@ -636,7 +623,7 @@ class TableManager:
             if self.config.debug_mode:
                 self.logger.info(f"Removida mesa STANDBY {tid} (timeout: {standby_timeout}s, não está entre mesas ativas)")
         
-        # 3. Limitar o número máximo de mesas em STANDBY
+        # 2. Limitar o número máximo de mesas em STANDBY
         standby_tables = [tid for tid, tdata in self.tables.items() 
                           if tdata['state'] == 'STANDBY']
         

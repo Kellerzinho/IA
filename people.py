@@ -346,13 +346,23 @@ class TableManager:
         # ---------- PASSO 1: Identifica possíveis merges ----------
         merges = {}
         for det_cls, det_coords in detected_boxes:
-            matching_ids = [
+            # Primeiro, procura por mesas ativas próximas
+            active_matching_ids = [
                 tid for tid, tdata in old_tables.items()
-                if is_near(tdata['coords'], det_coords, self.config.tracking_params['distance_threshold'])
+                if tdata['state'] != 'STANDBY' and is_near(tdata['coords'], det_coords, self.config.tracking_params['distance_threshold'])
             ]
+            
+            # Se não encontrou mesas ativas, procura por mesas STANDBY próximas para reativar
+            standby_matching_ids = [
+                tid for tid, tdata in old_tables.items()
+                if tdata['state'] == 'STANDBY' and is_near(tdata['coords'], det_coords, self.config.tracking_params['distance_threshold'])
+            ]
+            
+            # Prioriza mesas ativas, mas se não há ativas, considera STANDBY
+            matching_ids = active_matching_ids if active_matching_ids else standby_matching_ids
 
             if not matching_ids:
-                # Se não achamos mesa ativa, vira "pending"
+                # Se não achamos mesa ativa nem STANDBY próxima, vira "pending"
                 self.pending_new_tables[(det_cls, det_coords)] = current_time
             else:
                 # Se tem match, escolhe ID MAIOR
@@ -362,6 +372,11 @@ class TableManager:
                 for mid in matching_ids:
                     merges[chosen_id].add(mid)
                 used_ids.update(matching_ids)
+                
+                # Se reativando uma mesa STANDBY, marca para log
+                if old_tables[chosen_id]['state'] == 'STANDBY':
+                    if self.config.debug_mode:
+                        self.logger.info(f"Mesa STANDBY {chosen_id} será reativada por detecção próxima")
 
         # ---------- PASSO 2: Aplica merges ----------
         det_in_merge = {}
@@ -418,35 +433,76 @@ class TableManager:
         """Tenta confirmar novas mesas pendentes."""
         to_remove = []
         for (det_cls, det_coords), detected_time in list(self.pending_new_tables.items()):
-            too_close = any(
+            
+            # CORREÇÃO 1: Verificar proximidade apenas com mesas ATIVAS (não STANDBY)
+            active_tables = [
+                mesa for mesa in self.tables.values() 
+                if mesa['state'] != 'STANDBY'
+            ]
+            
+            too_close_to_active = any(
                 is_near(mesa['coords'], det_coords, self.config.tracking_params['distance_threshold'])
-                for mesa in self.tables.values()
+                for mesa in active_tables
             )
-            # Se não está perto de nenhuma mesa e já passou confirm_time
-            if not too_close and (current_time - detected_time >= self.config.tracking_params['confirm_time']):
-                # Gerar ID único para esta nova mesa
-                new_id = get_unique_table_id(self.camera_id)
+            
+            # CORREÇÃO 2: Verificar se há mesa STANDBY próxima para reativar
+            standby_tables = [
+                (tid, mesa) for tid, mesa in self.tables.items() 
+                if mesa['state'] == 'STANDBY'
+            ]
+            
+            nearby_standby = None
+            for tid, mesa in standby_tables:
+                if is_near(mesa['coords'], det_coords, self.config.tracking_params['distance_threshold']):
+                    nearby_standby = (tid, mesa)
+                    break
+            
+            # Se não está perto de mesa ativa e já passou confirm_time
+            if not too_close_to_active and (current_time - detected_time >= self.config.tracking_params['confirm_time']):
                 
-                updated_tables[new_id] = {
-                    'cls': det_cls,
-                    'coords': det_coords,
-                    'last_seen': current_time,
-                    'state': 'VAZIA',
-                    'pending_state': 'VAZIA',
-                    'state_change_time': current_time,
-                    'precisa_atendimento': False,
-                    'ultimo_atendimento': None,
-                    'creation_index': self.next_creation_index,
-                    'occupant_count': 0,
-                    # Garantir que os campos de controle de estado estejam presentes
-                    'last_occupancy_change': current_time,
-                    'pending_occupancy': None
-                }
-                self.next_creation_index += 1
-                to_remove.append((det_cls, det_coords))
+                # CORREÇÃO 3: Se há mesa STANDBY próxima, reativa ela ao invés de criar nova
+                if nearby_standby:
+                    standby_id, standby_data = nearby_standby
+                    
+                    # Reativa a mesa STANDBY
+                    standby_data['state'] = 'VAZIA'
+                    standby_data['cls'] = det_cls  # Atualiza classe se necessário
+                    standby_data['coords'] = update_box(standby_data['coords'], det_coords, 0.5)
+                    standby_data['last_seen'] = current_time
+                    standby_data['state_change_time'] = current_time
+                    standby_data['occupant_count'] = 0
+                    standby_data['last_occupancy_change'] = current_time
+                    standby_data['pending_occupancy'] = None
+                    
+                    updated_tables[standby_id] = standby_data
+                    to_remove.append((det_cls, det_coords))
+                    
+                    if self.config.debug_mode:
+                        self.logger.info(f"Mesa STANDBY {standby_id} reativada: tipo={det_cls} ({self.config.cls_names.get(det_cls, 'Desconhecida')})")
                 
-                if self.config.debug_mode:
-                    self.logger.info(f"Nova mesa {new_id} criada: tipo={det_cls} ({self.config.cls_names.get(det_cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(det_cls, 0)}")
+                else:
+                    # CORREÇÃO 4: Só cria nova mesa se não há STANDBY próxima
+                    new_id = get_unique_table_id(self.camera_id)
+                    
+                    updated_tables[new_id] = {
+                        'cls': det_cls,
+                        'coords': det_coords,
+                        'last_seen': current_time,
+                        'state': 'VAZIA',
+                        'pending_state': 'VAZIA',
+                        'state_change_time': current_time,
+                        'precisa_atendimento': False,
+                        'ultimo_atendimento': None,
+                        'creation_index': self.next_creation_index,
+                        'occupant_count': 0,
+                        'last_occupancy_change': current_time,
+                        'pending_occupancy': None
+                    }
+                    self.next_creation_index += 1
+                    to_remove.append((det_cls, det_coords))
+                    
+                    if self.config.debug_mode:
+                        self.logger.info(f"Nova mesa {new_id} criada: tipo={det_cls} ({self.config.cls_names.get(det_cls, 'Desconhecida')}), lugares={self.config.cls_to_lugares.get(det_cls, 0)}")
 
         for key in to_remove:
             del self.pending_new_tables[key]
@@ -468,6 +524,21 @@ class TableManager:
         # Atualiza coords / last_seen
         table_data['coords'] = new_coords
         table_data['last_seen'] = current_time
+        
+        # Se a mesa estava em STANDBY, reativa ela
+        if table_data['state'] == 'STANDBY':
+            old_state = table_data['state']
+            table_data['state'] = 'VAZIA'
+            table_data['cls'] = det_cls  # Atualiza classe se necessário
+            table_data['state_change_time'] = current_time
+            table_data['occupant_count'] = 0
+            table_data['last_occupancy_change'] = current_time
+            table_data['pending_occupancy'] = None
+            table_data['precisa_atendimento'] = False
+            table_data['ultimo_atendimento'] = None
+            
+            if self.config.debug_mode:
+                self.logger.info(f"Mesa {table_id} reativada de {old_state} para VAZIA")
 
         updated_tables[table_id] = table_data
 
@@ -518,8 +589,12 @@ class TableManager:
         """
         Remove mesas STANDBY nas seguintes condições:
         1. Cujo ID seja maior que o maior ID ativo (lógica original)
-        2. Limita o número total de mesas em STANDBY para evitar acúmulo
+        2. Que não foram vistas há muito tempo (mas protege as que estão entre mesas ativas)
+        3. Limita o número total de mesas em STANDBY para evitar acúmulo
         """
+        current_time = time.time()
+        standby_timeout = self.config.tracking_params.get('standby_timeout', 300)  # 5 minutos
+        
         active_tables = [tid for tid, tdata in self.tables.items() 
                          if tdata['state'] != 'STANDBY']
         
@@ -535,31 +610,53 @@ class TableManager:
         
         for tid in to_remove_by_id:
             del self.tables[tid]
-            self.logger.info(f"Removida mesa STANDBY {tid} (ID > {max_active_id})")
+            if self.config.debug_mode:
+                self.logger.info(f"Removida mesa STANDBY {tid} (ID > {max_active_id})")
         
-        # 2. Limitar o número máximo de mesas em STANDBY
+        # 2. Remover STANDBY muito antigas (mas proteger as que estão entre mesas ativas)
+        # Obter creation_index das mesas ativas para determinar "gaps"
+        active_creation_indices = [self.tables[tid]['creation_index'] for tid in active_tables]
+        min_active_index = min(active_creation_indices)
+        max_active_index = max(active_creation_indices)
+        
+        to_remove_by_time = []
+        for tid, tdata in self.tables.items():
+            if tdata['state'] == 'STANDBY':
+                time_in_standby = current_time - tdata['last_seen']
+                creation_index = tdata['creation_index']
+                
+                # Se está entre mesas ativas (por creation_index), não remove por timeout
+                is_between_active = min_active_index < creation_index < max_active_index
+                
+                if time_in_standby > standby_timeout and not is_between_active:
+                    to_remove_by_time.append(tid)
+        
+        for tid in to_remove_by_time:
+            del self.tables[tid]
+            if self.config.debug_mode:
+                self.logger.info(f"Removida mesa STANDBY {tid} (timeout: {standby_timeout}s, não está entre mesas ativas)")
+        
+        # 3. Limitar o número máximo de mesas em STANDBY
         standby_tables = [tid for tid, tdata in self.tables.items() 
                           if tdata['state'] == 'STANDBY']
         
-        # Número máximo permitido de mesas em STANDBY
         max_standby_tables = 3
         
-        # Se temos mais mesas em STANDBY do que o limite, remover as mais antigas
         if len(standby_tables) > max_standby_tables:
-            # Ordenar por creation_index (as mais antigas primeiro)
+            # Ordenar por last_seen (as mais antigas primeiro)
             sorted_standby = sorted(
-                [(tid, self.tables[tid]['creation_index']) for tid in standby_tables],
+                [(tid, self.tables[tid]['last_seen']) for tid in standby_tables],
                 key=lambda x: x[1]
             )
             
-            # Manter apenas as max_standby_tables mais recentes
             to_remove_by_limit = [tid for tid, _ in sorted_standby[:-max_standby_tables]]
             
             for tid in to_remove_by_limit:
                 del self.tables[tid]
-                self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido)")
+                if self.config.debug_mode:
+                    self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido)")
         
-        # Reordenar após a remoção:
+        # Reordenar após a remoção
         self.tables = self._sort_tables_by_creation(self.tables)
 
     # -------------------------------------------------------

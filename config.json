@@ -66,7 +66,8 @@
         "mao_horizontal_threshold": 150,
         "peso_horizontal": 0.6,
         "peso_vertical": 0.6,
-        "pessoa_to_table_max_dist": 150
+        "pessoa_to_table_max_dist": 150,
+        "standby_timeout": 300
     },
     "table_capacities": {
         "0": 10,

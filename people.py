@@ -1163,42 +1163,41 @@ def get_all_camera_snapshots():
         return global_camera_snapshots.copy()
 
 def send_combined_snapshots():
-    """Envia um único snapshot combinado com todas as câmeras."""
-    with global_snapshot_lock:
+    """Versão otimizada sem travamento - SOLUÇÃO RECOMENDADA."""
+    
+    # Tenta adquirir lock com timeout muito baixo
+    if not global_snapshot_lock.acquire(timeout=0.05):  # 50ms máximo
+        return  # Se não conseguir rapidamente, pula este envio
+    
+    try:
         if not global_camera_snapshots:
-            return  # Nada para enviar
+            return
             
-        # Cria a estrutura consolidada
+        # Cria snapshot rapidamente
         combined_snapshot = {
-            "restaurante": "CSVL",
+            "restaurante": "CSVL", 
             "cameras": list(global_camera_snapshots.values())
         }
-        
-        # Envia a notificação combinada
         combined_json = json.dumps(combined_snapshot)
         
+    finally:
+        global_snapshot_lock.release()  # SEMPRE libera o lock
+    
+    # HTTP em thread separada (não bloqueia)
+    def send_async():
         try:
-            # Obter configuração do dashboard
             config = AppConfig.load_from_json()
-            headers = {'Content-Type': 'application/json'}
-            
-            # Log para debug
-            print(f"[DASHBOARD] Enviando snapshot combinado com {len(global_camera_snapshots)} câmeras")
-            
-            # Usa o método PUT para enviar as notificações
-            resp = requests.put(
+            requests.put(
                 config.dashboard_url,
                 data=combined_json,
-                headers=headers,
-                timeout=3
+                headers={'Content-Type': 'application/json'},
+                timeout=0.8  # Timeout baixo
             )
-            
-            if resp.status_code == 200:
-                print(f"[DASHBOARD] Notificação combinada enviada com sucesso")
-            else:
-                print(f"[DASHBOARD] Falha ao enviar notificação combinada: {resp.status_code}")
-        except Exception as e:
-            print(f"[DASHBOARD] Erro ao enviar notificação combinada: {str(e)}")
+        except:
+            pass  # Falha silenciosa para não afetar performance
+    
+    # Executa HTTP em thread separada
+    threading.Thread(target=send_async, daemon=True).start()
 
 def get_last_used_port():
     """Lê a última porta usada do arquivo."""
@@ -1821,7 +1820,7 @@ def main():
     def snapshot_sender():
         while True:
             send_combined_snapshots()
-            time.sleep(1)  # Envia atualizações combinadas a cada 1 segundo
+            time.sleep(2)  # Aumentar de 1s para 2s - menos requisições
     
     snapshot_thread = threading.Thread(target=snapshot_sender, daemon=True)
     snapshot_thread.start()

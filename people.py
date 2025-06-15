@@ -898,13 +898,13 @@ class TableManager:
             if len(person_box) != 4 or len(table_box) != 4:
                 return float('inf')
             
-            # Usamos o centro da pessoa e da mesa para calcular distância
-            px = (person_box[0] + person_box[2]) / 2
-            py = (person_box[1] + person_box[3]) / 2
-            tx = (table_box[0] + table_box[2]) / 2
-            ty = (table_box[1] + table_box[3]) / 2
+            # CORRIGIDO: Usar parte inferior da pessoa (pés) e centro da mesa
+            px = (person_box[0] + person_box[2]) / 2  # Centro horizontal da pessoa
+            py = person_box[3]                        # PARTE INFERIOR da pessoa (pés)
+            tx = (table_box[0] + table_box[2]) / 2    # Centro horizontal da mesa
+            ty = (table_box[1] + table_box[3]) / 2    # Centro vertical da mesa
             
-            # Distância euclidiana simples
+            # Distância euclidiana
             return np.sqrt((px - tx)**2 + (py - ty)**2)
 
         # Lista para armazenar associações pessoa-mesa para visualização
@@ -1108,8 +1108,11 @@ class TableManager:
     def draw_interface(self, frame, current_time, detected_maos=[], detected_people=[]):
         """
         Desenha as mesas na ordem do dict self.tables (creation_index ascendente).
-        Agora também desenha as pessoas detectadas.
+        Agora também desenha as pessoas detectadas e estatísticas da câmera.
         """
+        # Obter estatísticas da câmera
+        stats = self.get_occupancy_stats()
+        
         # Desenhar mesas
         for table_id, tdata in sorted(self.tables.items(), key=lambda x: x[1]['creation_index']):
             x1, y1, x2, y2 = tdata['coords']
@@ -1148,14 +1151,141 @@ class TableManager:
                 cv2.putText(frame, mesa_cls_name, (x1+5, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+        # NOVO: Desenhar pessoas detectadas
+        if self.config.show_people_boxes and detected_people:
+            person_color = self.config.colors.get('PESSOA', (128, 0, 128))
+            
+            for person_cls, person_coords in detected_people:
+                if len(person_coords) == 4:
+                    px1, py1, px2, py2 = person_coords
+                    
+                    # Desenhar box da pessoa
+                    cv2.rectangle(frame, (px1, py1), (px2, py2), person_color, 2)
+                    
+                    # Label da pessoa
+                    cv2.putText(frame, "PESSOA", (px1+2, py1+15),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 1)
+        
+        # NOVO: Desenhar mãos detectadas
+        if detected_maos:
+            mao_color = self.config.colors.get('MAO', (0, 165, 255))
+            
+            for mao_cls, mao_coords in detected_maos:
+                if len(mao_coords) == 4:
+                    mx1, my1, mx2, my2 = mao_coords
+                    
+                    # Desenhar box da mão
+                    cv2.rectangle(frame, (mx1, my1), (mx2, my2), mao_color, 2)
+                    
+                    # Label da mão
+                    cv2.putText(frame, "MAO", (mx1+2, my1+15),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, mao_color, 1)
+        
+        # NOVO: Desenhar linhas de associação pessoa-mesa
+        if self.config.show_association_lines and hasattr(self, 'person_table_associations'):
+            for person_coords, table_coords, table_id in self.person_table_associations:
+                if len(person_coords) == 4 and len(table_coords) == 4:
+                    # CORRIGIDO: Usar parte inferior da pessoa (pés)
+                    person_feet = (
+                        int((person_coords[0] + person_coords[2]) / 2),  # Centro horizontal
+                        int(person_coords[3])                            # Parte inferior (pés)
+                    )
+                    
+                    # Centro da mesa
+                    table_center = (
+                        int((table_coords[0] + table_coords[2]) / 2),
+                        int((table_coords[1] + table_coords[3]) / 2)
+                    )
+                    
+                    # Desenhar linha de associação dos pés da pessoa ao centro da mesa
+                    cv2.line(frame, person_feet, table_center, (0, 255, 255), 1)
+                    
+                    # Opcional: mostrar distância
+                    if self.config.debug_mode:
+                        import numpy as np
+                        dist = np.sqrt((person_feet[0] - table_center[0])**2 + 
+                                     (person_feet[1] - table_center[1])**2)
+                        mid_point = (
+                            int((person_feet[0] + table_center[0]) / 2),
+                            int((person_feet[1] + table_center[1]) / 2)
+                        )
+                        cv2.putText(frame, f"{dist:.0f}px", mid_point,
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 255), 1)
+
+        # NOVO: Desenhar estatísticas da câmera no canto superior esquerdo
+        height, width = frame.shape[:2]
+        info_x = 10           # Margem da esquerda
+        info_y = 25           # Margem do topo
+
+        # Fundo semi-transparente para as estatísticas
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (info_x - 5, info_y - 20), (info_x + 275, info_y + 120), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+
+        # Cor baseada na taxa de ocupação
+        taxa_cor = (0, 255, 0)  # Verde
+        if stats['taxa_ocupacao'] > 0.8:  # 80%+
+            taxa_cor = (0, 0, 255)  # Vermelho
+        elif stats['taxa_ocupacao'] > 0.6:  # 60%+
+            taxa_cor = (0, 165, 255)  # Laranja
+        elif stats['taxa_ocupacao'] > 0.3:  # 30%+
+            taxa_cor = (0, 255, 255)  # Amarelo
+
+        # Texto das estatísticas
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+
+        # Taxa de ocupação (linha principal)
+        taxa_texto = f"Taxa: {stats['taxa_ocupacao']:.0%}"
+        cv2.putText(frame, taxa_texto, (info_x, info_y), font, 0.6, taxa_cor, 2)
+
+        # Pessoas / Lugares
+        pessoas_texto = f"Pessoas: {stats['occupant_sum']}/{stats['capacity_sum']}"
+        cv2.putText(frame, pessoas_texto, (info_x, info_y + 25), font, font_scale, (255, 255, 255), thickness)
+
+        # Mesas ocupadas / Total
+        mesas_texto = f"Mesas: {stats['ocupadas']}/{stats['total_mesas'] - stats['standby']}"
+        cv2.putText(frame, mesas_texto, (info_x, info_y + 45), font, font_scale, (255, 255, 255), thickness)
+
+        # Atendimento (se houver)
+        if stats['atendimento'] > 0:
+            atend_texto = f"Atendimento: {stats['atendimento']}"
+            cv2.putText(frame, atend_texto, (info_x, info_y + 65), font, font_scale, (0, 255, 255), thickness)
+
+        # Standby (se houver)
+        if stats['standby'] > 0:
+            standby_texto = f"Standby: {stats['standby']}"
+            cv2.putText(frame, standby_texto, (info_x, info_y + 85), font, font_scale, (128, 128, 128), thickness)
+
+        # NOVO: Barra visual de ocupação
+        bar_x = info_x
+        bar_y = info_y + 105
+        bar_width = 200
+        bar_height = 8
+
+        # Fundo da barra
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (64, 64, 64), -1)
+
+        # Barra de progresso
+        fill_width = int(bar_width * stats['taxa_ocupacao'])
+        if fill_width > 0:
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_width, bar_y + bar_height), taxa_cor, -1)
+
+        # Bordas da barra
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (255, 255, 255), 1)
+
 # Variável global para armazenar snapshots das câmeras
 global_camera_snapshots = {}
 global_snapshot_lock = threading.Lock()
 
 def add_camera_snapshot(camera_id, snapshot_data):
-    """Adiciona o snapshot de uma câmera ao armazenamento global."""
-    with global_snapshot_lock:
-        global_camera_snapshots[camera_id] = snapshot_data
+    """Versão otimizada com timeout."""
+    if global_snapshot_lock.acquire(timeout=0.02):
+        try:
+            global_camera_snapshots[camera_id] = snapshot_data
+        finally:
+            global_snapshot_lock.release()
 
 def get_all_camera_snapshots():
     """Retorna uma cópia de todos os snapshots de câmeras."""
@@ -1488,11 +1618,8 @@ def process_camera(camera_config, config):
         cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduz o buffer para minimizar atrasos
-
-        cap.set(cv2.CAP_PROP_FPS, 15)        # Limitar FPS da captura
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)   # Reduzir resolução
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)   # se necessário
-
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)    # Muito menor
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
         return cap
     
     # Abre stream da câmera com configurações iniciais
@@ -1513,7 +1640,7 @@ def process_camera(camera_config, config):
     max_fail = 10  # Reduzido para 10 tentativas antes de reconectar
     
     # Estrutura para armazenar pessoas detectadas anteriormente
-    previous_people = []
+    previous_people = []  # Lista vazia
     
     # Contagem de classes para debug
     class_counter = defaultdict(int)

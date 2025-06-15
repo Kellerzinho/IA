@@ -2,37 +2,37 @@
     "cameras": [
         {
             "id": "camera3",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=3&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=3&subtype=0",
             "name": "Câmera 3"
         },
         {
             "id": "camera5",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=5&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=5&subtype=0",
             "name": "Câmera 5"
         },
         {
             "id": "camera6",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=6&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=6&subtype=0",
             "name": "Câmera 6"
         },
         {
             "id": "camera7",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=7&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=7&subtype=0",
             "name": "Câmera 7"
         },
         {
             "id": "camera8",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=8&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=8&subtype=0",
             "name": "Câmera 8"
         },
         {
             "id": "camera9",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=9&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=9&subtype=0",
             "name": "Câmera 9"
         },
         {
             "id": "camera11",
-            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:33135/cam/realmonitor?channel=11&subtype=0",
+            "url": "rtsp://rascal:R%40sc%401%23%23@127.0.0.1:25534/cam/realmonitor?channel=11&subtype=0",
             "name": "Câmera 11"
         }
     ],
@@ -44,7 +44,7 @@
     "model": {
         "path": "peoplev3.pt",
         "conf": 0.2,
-        "mao_conf": 0.7,
+        "mao_conf": 0.4,
         "pessoa_conf": 0.15,
         "iou": 0.4,
         "agnostic_nms": true

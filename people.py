@@ -83,6 +83,57 @@ def print_table_id_distribution():
         print(f"Próximo ID global: {global_next_id}")
         print("==================================================\n")
 
+def remove_global_table_id(camera_id, table_id):
+    """
+    Remove um ID de mesa específico do sistema global quando a mesa é excluída.
+    """
+    with global_ids_lock:
+        camera_id = str(camera_id)
+        if camera_id in global_table_ids:
+            if table_id in global_table_ids[camera_id]:
+                global_table_ids[camera_id].remove(table_id)
+                # Se a lista ficou vazia, remove a entrada da câmera
+                if not global_table_ids[camera_id]:
+                    del global_table_ids[camera_id]
+
+def sync_global_table_ids(camera_id, active_table_ids):
+    """
+    Sincroniza os IDs globais com os IDs atualmente ativos na câmera.
+    Remove IDs que não existem mais na câmera.
+    """
+    with global_ids_lock:
+        camera_id = str(camera_id)
+        if camera_id in global_table_ids:
+            # Manter apenas IDs que ainda existem na câmera
+            global_table_ids[camera_id] = [tid for tid in global_table_ids[camera_id] if tid in active_table_ids]
+            # Se a lista ficou vazia, remove a entrada da câmera
+            if not global_table_ids[camera_id]:
+                del global_table_ids[camera_id]
+
+def cleanup_global_ids():
+    """
+    Limpeza periódica do sistema de IDs globais.
+    Redefine o próximo ID global baseado no maior ID atualmente em uso.
+    """
+    global global_next_id
+    with global_ids_lock:
+        if global_table_ids:
+            # Encontra o maior ID em uso
+            all_ids = []
+            for camera_ids in global_table_ids.values():
+                all_ids.extend(camera_ids)
+            
+            if all_ids:
+                max_id = max(all_ids)
+                # Define o próximo ID como max_id + 1
+                global_next_id = max_id + 1
+            else:
+                # Se não há IDs em uso, reinicia do 1
+                global_next_id = 1
+        else:
+            # Se não há câmeras, reinicia do 1
+            global_next_id = 1
+
 @dataclass
 class AppConfig:
     cls_to_lugares: Dict[int, int] = field(default_factory=dict)
@@ -589,7 +640,7 @@ class TableManager:
         """
         Remove mesas STANDBY nas seguintes condições:
         1. Que não foram vistas há muito tempo (mas protege as que estão entre mesas ativas)
-        2. Limita o número total de mesas em STANDBY para evitar acúmulo
+        2. Limita o número total de mesas em STANDBY para evitar acúmulo (mas protege as que estão entre mesas ativas)
         """
         current_time = time.time()
         standby_timeout = self.config.tracking_params.get('standby_timeout', 300)  # 5 minutos
@@ -600,48 +651,98 @@ class TableManager:
         if not active_tables:
             return
         
-        # 1. Remover STANDBY muito antigas (mas proteger as que estão entre mesas ativas)
         # Obter creation_index das mesas ativas para determinar "gaps"
         active_creation_indices = [self.tables[tid]['creation_index'] for tid in active_tables]
         min_active_index = min(active_creation_indices)
         max_active_index = max(active_creation_indices)
         
+        # Função para verificar se uma mesa STANDBY está protegida (entre mesas ativas)
+        def is_protected_standby(table_data):
+            creation_index = table_data['creation_index']
+            return min_active_index < creation_index < max_active_index
+        
+        # Lista para rastrear IDs removidos
+        removed_ids = []
+        
+        # 1. Remover STANDBY muito antigas (mas proteger as que estão entre mesas ativas)
         to_remove_by_time = []
         for tid, tdata in self.tables.items():
             if tdata['state'] == 'STANDBY':
                 time_in_standby = current_time - tdata['last_seen']
-                creation_index = tdata['creation_index']
                 
                 # Se está entre mesas ativas (por creation_index), não remove por timeout
-                is_between_active = min_active_index < creation_index < max_active_index
-                
-                if time_in_standby > standby_timeout and not is_between_active:
+                if time_in_standby > standby_timeout and not is_protected_standby(tdata):
                     to_remove_by_time.append(tid)
         
         for tid in to_remove_by_time:
             del self.tables[tid]
+            removed_ids.append(tid)
             if self.config.debug_mode:
                 self.logger.info(f"Removida mesa STANDBY {tid} (timeout: {standby_timeout}s, não está entre mesas ativas)")
         
-        # 2. Limitar o número máximo de mesas em STANDBY
+        # 2. Limitar o número máximo de mesas em STANDBY (mas proteger as que estão entre mesas ativas)
         standby_tables = [tid for tid, tdata in self.tables.items() 
                           if tdata['state'] == 'STANDBY']
         
         max_standby_tables = 3
         
         if len(standby_tables) > max_standby_tables:
-            # Ordenar por last_seen (as mais antigas primeiro)
-            sorted_standby = sorted(
-                [(tid, self.tables[tid]['last_seen']) for tid in standby_tables],
-                key=lambda x: x[1]
-            )
+            # Separar mesas STANDBY protegidas das não protegidas
+            protected_standby = []
+            unprotected_standby = []
             
-            to_remove_by_limit = [tid for tid, _ in sorted_standby[:-max_standby_tables]]
+            for tid in standby_tables:
+                if is_protected_standby(self.tables[tid]):
+                    protected_standby.append(tid)
+                else:
+                    unprotected_standby.append(tid)
             
-            for tid in to_remove_by_limit:
-                del self.tables[tid]
-                if self.config.debug_mode:
-                    self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido)")
+            # Se temos mesas protegidas + não protegidas > limite, remove apenas das não protegidas
+            total_standby = len(protected_standby) + len(unprotected_standby)
+            
+            if total_standby > max_standby_tables:
+                # Calcular quantas precisamos remover
+                to_remove_count = total_standby - max_standby_tables
+                
+                # Primeiro, tenta remover apenas das não protegidas
+                if len(unprotected_standby) >= to_remove_count:
+                    # Ordenar não protegidas por last_seen (as mais antigas primeiro)
+                    sorted_unprotected = sorted(
+                        [(tid, self.tables[tid]['last_seen']) for tid in unprotected_standby],
+                        key=lambda x: x[1]
+                    )
+                    
+                    to_remove_by_limit = [tid for tid, _ in sorted_unprotected[:to_remove_count]]
+                    
+                    for tid in to_remove_by_limit:
+                        del self.tables[tid]
+                        removed_ids.append(tid)
+                        if self.config.debug_mode:
+                            self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido, não protegida)")
+                else:
+                    # Se não há suficientes não protegidas, remove todas as não protegidas
+                    for tid in unprotected_standby:
+                        del self.tables[tid]
+                        removed_ids.append(tid)
+                        if self.config.debug_mode:
+                            self.logger.info(f"Removida mesa STANDBY {tid} (limite excedido, não protegida)")
+                    
+                    # E avisa que há muitas mesas protegidas
+                    if self.config.debug_mode:
+                        self.logger.info(f"AVISO: {len(protected_standby)} mesas STANDBY protegidas (entre ativas) excedem limite, mas não foram removidas")
+        
+        # 3. NOVO: Sincronizar IDs globais após remoções
+        if removed_ids:
+            # Remove IDs específicos do sistema global
+            for tid in removed_ids:
+                remove_global_table_id(self.camera_id, tid)
+            
+            # Sincroniza todos os IDs desta câmera
+            current_table_ids = list(self.tables.keys())
+            sync_global_table_ids(self.camera_id, current_table_ids)
+            
+            if self.config.debug_mode:
+                self.logger.info(f"Sincronizados IDs globais da câmera {self.camera_id}: removidos {removed_ids}")
         
         # Reordenar após a remoção
         self.tables = self._sort_tables_by_creation(self.tables)
@@ -1047,93 +1148,6 @@ class TableManager:
                 cv2.putText(frame, mesa_cls_name, (x1+5, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Desenhar pessoas detectadas (se habilitado)
-        if self.config.show_people_boxes:
-            for p_cls, p_coords in detected_people:
-                x1, y1, x2, y2 = p_coords
-                color = self.config.colors['PESSOA']
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                
-                # Texto básico ou detalhado dependendo do modo
-                if self.config.debug_mode:
-                    pessoa_cls_name = self.config.cls_names.get(p_cls, f"Cls {p_cls}")
-                    cv2.putText(frame, f"{pessoa_cls_name} ({p_cls})", (x1, y1-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                else:
-                    cv2.putText(frame, "PESSOA", (x1, y1-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        
-        # Desenhar linhas de associação entre pessoas e mesas (se habilitado)
-        if self.config.show_association_lines and hasattr(self, 'person_table_associations'):
-            for person_box, table_box, table_id in self.person_table_associations:
-                # Usa a parte inferior central da pessoa (pés)
-                px = (person_box[0] + person_box[2]) // 2  # x central
-                py = person_box[3]  # y mais baixo (pés da pessoa)
-                
-                # Centro da mesa permanece o mesmo
-                tx = (table_box[0] + table_box[2]) // 2
-                ty = (table_box[1] + table_box[3]) // 2
-                
-                # Desenha a linha de associação
-                cv2.line(frame, (px, py), (tx, ty), (0, 255, 255), 1)
-
-        # Desenhar mãos detectadas
-        for mao_cls, mao_coords in detected_maos:
-            x1, y1, x2, y2 = mao_coords
-            color = self.config.colors['MAO']
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            if self.config.debug_mode:
-                mao_cls_name = self.config.cls_names.get(mao_cls, f"Cls {mao_cls}")
-                cv2.putText(frame, f"{mao_cls_name} ({mao_cls})", (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            else:
-                cv2.putText(frame, "MAO", (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-        # Mostra estatísticas
-        stats = self.get_occupancy_stats()
-        
-        # Versão simplificada do status - sem mesas em standby e atendimento
-        stxt = (
-            f"Mesas: {stats['total_mesas'] - stats['standby']} | "
-            f"Ocupadas: {stats['ocupadas']} | "
-            f"Pessoas: {stats['occupant_sum']}/{stats['capacity_sum']}"
-        )
-        cv2.putText(frame, stxt, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-        
-        # Destaque para a taxa de ocupação
-        taxa_txt = f"Taxa: {stats['taxa_ocupacao']:.0%}"
-        tx_width = cv2.getTextSize(taxa_txt, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0][0]
-        
-        # Desenha um fundo para destacar a taxa
-        cv2.rectangle(frame, 
-                        (frame.shape[1] - tx_width - 20, 10), 
-                        (frame.shape[1] - 10, 50), 
-                        (0, 0, 60), 
-                        -1)  # -1 para preencher o retângulo
-        
-        # Desenha a taxa com tamanho maior e em destaque
-        cv2.putText(frame, 
-                    taxa_txt, 
-                    (frame.shape[1] - tx_width - 15, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 
-                    1.2,  # Fonte maior 
-                    (0, 165, 255),  # Cor laranja para destaque
-                    3)  # Espessura maior
-                
-        # Mostrar informações adicionais em modo debug
-        if self.config.debug_mode:
-            debug_info = (
-                f"Modo: BOUNDING BOX | "
-                f"Pessoas detectadas: {len(detected_people)} | "
-                f"Maos detectadas: {len(detected_maos)} | "
-                f"Modelo: {self.config.model_path}"
-            )
-            cv2.putText(frame, debug_info, (10, frame.shape[0] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
 # Variável global para armazenar snapshots das câmeras
 global_camera_snapshots = {}
 global_snapshot_lock = threading.Lock()
@@ -1475,6 +1489,11 @@ def process_camera(camera_config, config):
         cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduz o buffer para minimizar atrasos
+
+        cap.set(cv2.CAP_PROP_FPS, 15)        # Limitar FPS da captura
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)   # Reduzir resolução
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)   # se necessário
+
         return cap
     
     # Abre stream da câmera com configurações iniciais
@@ -1511,6 +1530,8 @@ def process_camera(camera_config, config):
                 mem_info = proc.memory_info()
                 table_manager.logger.info(f"Uso de memória ({camera_name}): {mem_info.rss / 1024 / 1024:.1f} MB")
                 last_mem_check = current_time
+            
+            # Removido: Limpeza periódica dos IDs globais (a cada 10 minutos)
             
             ret, frame = cap.read()
             if ret:

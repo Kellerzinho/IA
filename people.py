@@ -31,8 +31,7 @@ device = torch.device('cuda')
 print(f"Usando dispositivo: {device} - {torch.cuda.get_device_name(0)}")
 print(f"Memória GPU total: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
 
-# Constante para o arquivo que guarda a última porta
-LAST_PORT_FILE = 'last_used_port.txt'
+
 
 # Adicionar após as importações e variáveis globais iniciais, antes da classe AppConfig
 # Dicionário global para controle de IDs únicos por câmera
@@ -1329,61 +1328,7 @@ def send_combined_snapshots():
     # Executa HTTP em thread separada
     threading.Thread(target=send_async, daemon=True).start()
 
-def get_last_used_port():
-    """Lê a última porta usada do arquivo."""
-    try:
-        if os.path.exists(LAST_PORT_FILE):
-            with open(LAST_PORT_FILE, 'r') as f:
-                return f.read().strip()
-    except Exception as e:
-        print(f"Erro ao ler última porta usada: {e}")
-    return None
 
-def save_last_used_port(port):
-    """Salva a porta usada no arquivo."""
-    try:
-        with open(LAST_PORT_FILE, 'w') as f:
-            f.write(str(port))
-    except Exception as e:
-        print(f"Erro ao salvar última porta usada: {e}")
-
-def get_dynamic_camera_url(base_url):
-    """Solicita a porta ao usuário e atualiza a URL."""
-    last_port = get_last_used_port()
-    prompt = f"Digite a porta para a câmera RTSP"
-    if last_port:
-        prompt += f" (última: {last_port}, deixe em branco para usar): "
-    else:
-        prompt += ": "
-
-    while True:
-        user_input = input(prompt).strip()
-        if not user_input:
-            if last_port:
-                selected_port = last_port
-                print(f"Usando a última porta salva: {selected_port}")
-                break
-            else:
-                print("Nenhuma porta anterior encontrada. Por favor, insira uma porta.")
-        else:
-            # Validação simples (verifica se é número)
-            if user_input.isdigit():
-                selected_port = user_input
-                break
-            else:
-                print("Entrada inválida. Por favor, insira um número de porta.")
-
-    # Tenta substituir a porta na URL base
-    # Regex para encontrar @host:porta/
-    match = re.search(r"(@[^:]+):(\d+)/", base_url)
-    if match:
-        new_url = base_url[:match.start(2)] + selected_port + base_url[match.end(2):]
-        print(f"URL da câmera configurada para: {new_url}")
-        save_last_used_port(selected_port) # Salva a porta que será usada
-        return new_url
-    else:
-        print("Formato da URL inválido no config.json. Não foi possível encontrar '@host:porta/'. Usando URL original.")
-        return base_url
 
 
 def calculate_iou(box1, box2):
@@ -1865,69 +1810,11 @@ def process_camera(camera_config, config):
         table_manager.logger.info(f"Processamento da {camera_name} encerrado")
 
 
-def update_camera_ports():
-    """Solicita a porta ao usuário e atualiza todas as URLs das câmeras no config.json."""
-    last_port = get_last_used_port()
-    prompt = f"Digite a porta para todas as câmeras RTSP"
-    if last_port:
-        prompt += f" (última: {last_port}, aperte Enter para usar): "
-    else:
-        prompt += ": "
 
-    while True:
-        user_input = input(prompt).strip()
-        if not user_input:
-            if last_port:
-                selected_port = last_port
-                print(f"Usando a última porta salva: {selected_port}")
-                break
-            else:
-                print("Nenhuma porta anterior encontrada. Por favor, insira uma porta.")
-        else:
-            # Validação simples (verifica se é número)
-            if user_input.isdigit():
-                selected_port = user_input
-                break
-            else:
-                print("Entrada inválida. Por favor, insira um número de porta.")
-    
-    # Salva a porta selecionada para uso futuro
-    save_last_used_port(selected_port)
-    
-    # Atualiza o arquivo config.json
-    try:
-        # Carrega o arquivo atual
-        with open('config.json', 'r', encoding='utf-8') as f:
-            config_data = json.load(f)
-        
-        # Atualiza as URLs das câmeras
-        for camera in config_data['cameras']:
-            url = camera['url']
-            # Regex para encontrar @host:porta/
-            match = re.search(r"(@[^:]+):(\d+)/", url)
-            if match:
-                new_url = url[:match.start(2)] + selected_port + url[match.end(2):]
-                camera['url'] = new_url
-                print(f"URL da {camera.get('name', camera.get('id', 'Câmera'))} atualizada para: {new_url}")
-            else:
-                print(f"Formato da URL inválido para {camera.get('name', camera.get('id', 'Câmera'))}. Não foi possível atualizar.")
-        
-        # Salva as alterações
-        with open('config.json', 'w', encoding='utf-8') as f:
-            json.dump(config_data, f, indent=4, ensure_ascii=False)
-        
-        print("Arquivo config.json atualizado com sucesso!")
-        return selected_port
-    except Exception as e:
-        print(f"Erro ao atualizar config.json: {str(e)}")
-        return selected_port
 
 
 def main():
-    # Atualiza as portas das câmeras
-    update_camera_ports()
-    
-    # Carregar configurações do arquivo JSON (após atualização das portas)
+    # Carregar configurações do arquivo JSON
     config = AppConfig.load_from_json()
     
     # Verificar se temos câmeras configuradas
